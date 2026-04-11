@@ -1,0 +1,5 @@
+{
+  "name": "Tally XML Generator",
+  "description": "Convert Excel data to Tally XML format with AI-powered ledger mapping and voucher type selection.",
+  "requestFramePermissions": []
+}
