@@ -26,7 +26,7 @@ export const VOUCHER_TEMPLATES = {
   },
   Journal: {
     nature: 'Accounting',
-    fields: ['Date', 'Voucher Number', 'Debit Ledger', 'Credit Ledger', 'Amount', 'Narration'],
-    description: 'Used for adjustment entries.'
+    fields: ['Date', 'Voucher Number', 'Ledger Name', 'Debit', 'Credit', 'Narration'],
+    description: 'Used for adjustment entries. Use same Voucher Number for multiple Dr/Cr entries.'
   }
 };

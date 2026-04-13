@@ -97,7 +97,7 @@ export const AccountSelectStep = ({
               ref={statementFileRef} 
               onChange={onStatementUpload} 
               className="hidden" 
-              accept=".xlsx, .xls, .csv"
+              accept=".xlsx, .xls, .csv, .pdf"
             />
           </div>
         )}

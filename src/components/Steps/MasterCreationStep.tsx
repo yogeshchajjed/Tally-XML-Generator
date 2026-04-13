@@ -66,13 +66,13 @@ export const MasterCreationStep = ({ onBack, tallyData }: MasterCreationStepProp
   }, [stockItem.hsnCode]);
 
   const ledgerGroups = useMemo(() => {
-    if (!tallyData) return ['Sundry Debtors', 'Sundry Creditors', 'Bank Accounts', 'Cash-in-hand', 'Indirect Expenses'];
+    if (!tallyData || !tallyData.ledgers || !Array.isArray(tallyData.ledgers)) return ['Sundry Debtors', 'Sundry Creditors', 'Bank Accounts', 'Cash-in-hand', 'Indirect Expenses'];
     const groups = new Set(tallyData.ledgers.map(l => l.parent).filter(Boolean));
     return Array.from(groups).sort();
   }, [tallyData]);
 
   const stockGroups = useMemo(() => {
-    if (!tallyData) return ['Primary'];
+    if (!tallyData || !tallyData.stockItems || !Array.isArray(tallyData.stockItems)) return ['Primary'];
     const groups = new Set(tallyData.stockItems.map(si => si.parent).filter(Boolean));
     return Array.from(groups).sort();
   }, [tallyData]);
@@ -101,59 +101,99 @@ export const MasterCreationStep = ({ onBack, tallyData }: MasterCreationStepProp
     toast.success('XML Generated successfully!');
   };
 
-  const downloadExcelTemplate = async () => {
+  const downloadLedgerTemplate = async () => {
     const workbook = new ExcelJS.Workbook();
-    const worksheet = workbook.addWorksheet('Masters');
-    const listSheet = workbook.addWorksheet('Lists');
-    listSheet.state = 'veryHidden';
-
+    const worksheet = workbook.addWorksheet('Ledgers');
+    
     const headers = [
-      'Type', 'Name', 'Alias 1', 'Alias 2', 'Parent_Group', 
-      'Address 1', 'Address 2', 'GSTIN', 
-      'UOM', 'HSN_Code', 'GST_Rate', 'Costing_Method'
+      'Name', 'Alias 1', 'Alias 2', 'Parent_Group', 
+      'Address 1', 'Address 2', 'GSTIN'
     ];
     worksheet.addRow(headers);
     worksheet.getRow(1).font = { bold: true };
 
-    // Prepare lists
-    const types = ['Ledger', 'StockItem'];
-    const costingMethods = COSTING_METHODS;
-    const lGroups = ledgerGroups;
-    const sGroups = stockGroups;
+    // Add dynamic lists if tallyData is available
+    if (tallyData && tallyData.ledgers && Array.isArray(tallyData.ledgers) && tallyData.ledgers.length > 0) {
+      const listSheet = workbook.addWorksheet('Lists');
+      listSheet.state = 'veryHidden';
 
-    types.forEach((t, i) => listSheet.getCell(`A${i + 1}`).value = t);
-    costingMethods.forEach((m, i) => listSheet.getCell(`B${i + 1}`).value = m);
-    lGroups.forEach((g, i) => listSheet.getCell(`C${i + 1}`).value = g);
-    sGroups.forEach((g, i) => listSheet.getCell(`D${i + 1}`).value = g);
-
-    const typeRange = `Lists!$A$1:$A$${types.length}`;
-    const costingRange = `Lists!$B$1:$B$${costingMethods.length}`;
-    const ledgerGroupRange = `Lists!$C$1:$C$${lGroups.length}`;
-    const stockGroupRange = `Lists!$D$1:$D$${sGroups.length}`;
-
-    // Apply validations
-    for (let i = 2; i <= 100; i++) {
-      // Type dropdown
-      worksheet.getCell(`A${i}`).dataValidation = { type: 'list', formulae: [typeRange] };
+      const groups = [...new Set(tallyData.ledgers.map(l => l.parent).filter(Boolean))];
+      if (groups.length === 0) groups.push('Primary', 'Sundry Debtors', 'Sundry Creditors');
       
-      // Parent Group dropdown (Conditional logic in Excel is hard, so we'll provide a combined list or just ledger groups as default)
-      // For simplicity in template, we'll use a combined range or just the first 100 groups
-      worksheet.getCell(`E${i}`).dataValidation = { type: 'list', formulae: [ledgerGroupRange] };
+      groups.forEach((g, i) => listSheet.getCell(`A${i + 1}`).value = g);
 
-      // Costing Method dropdown
-      worksheet.getCell(`L${i}`).dataValidation = { type: 'list', formulae: [costingRange] };
+      const groupRange = `='Lists'!$A$1:$A$${groups.length}`;
+
+      for (let i = 2; i <= 100; i++) {
+        worksheet.getCell(`D${i}`).dataValidation = { type: 'list', formulae: [groupRange] };
+      }
     }
 
     // Add sample data
-    worksheet.addRow(['Ledger', 'ABC Traders', 'ABC', '', 'Sundry Debtors', 'Street 1', 'City', '07AAAAA0000A1Z5', '', '', '', '']);
-    worksheet.addRow(['StockItem', 'Laptop Dell', 'Dell Lappy', '', 'Primary', '', '', '', 'Nos', '8471', '18%', 'Avg. Cost']);
+    worksheet.addRow(['ABC Traders', 'ABC', '', 'Sundry Debtors', 'Street 1', 'City', '07AAAAA0000A1Z5']);
+    worksheet.addRow(['XYZ Services', '', '', 'Sundry Creditors', 'Main Road', 'Mumbai', '27BBBBB1111B1Z1']);
 
     const buffer = await workbook.xlsx.writeBuffer();
     const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'Tally_Advanced_Masters_Template.xlsx';
+    a.download = 'Tally_Ledger_Master_Template.xlsx';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const downloadStockItemTemplate = async () => {
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet('StockItems');
+    
+    const headers = [
+      'Name', 'Alias 1', 'Alias 2', 'Parent_Group', 
+      'UOM', 'HSN_Code', 'GST_Rate', 'Costing_Method'
+    ];
+    worksheet.addRow(headers);
+    worksheet.getRow(1).font = { bold: true };
+
+    // Add dynamic lists
+    const listSheet = workbook.addWorksheet('Lists');
+    listSheet.state = 'veryHidden';
+
+    const uoms = (tallyData && tallyData.stockItems) ? [...new Set(tallyData.stockItems.map(si => si.uom).filter(Boolean))] : [];
+    if (uoms.length === 0) uoms.push('Nos', 'Pcs', 'Kg', 'Units', 'Box');
+
+    const groups = (tallyData && tallyData.stockItems) ? [...new Set(tallyData.stockItems.map(si => si.parent).filter(Boolean))] : [];
+    if (groups.length === 0) groups.push('Primary');
+
+    const costingMethods = COSTING_METHODS;
+    const gstRates = ['0%', '5%', '12%', '18%', '28%', 'Exempt', 'Nil Rated'];
+
+    uoms.forEach((u, i) => listSheet.getCell(`A${i + 1}`).value = u);
+    groups.forEach((g, i) => listSheet.getCell(`B${i + 1}`).value = g);
+    costingMethods.forEach((m, i) => listSheet.getCell(`C${i + 1}`).value = m);
+    gstRates.forEach((r, i) => listSheet.getCell(`D${i + 1}`).value = r);
+
+    const uomRange = `='Lists'!$A$1:$A$${uoms.length}`;
+    const groupRange = `='Lists'!$B$1:$B$${groups.length}`;
+    const costingRange = `='Lists'!$C$1:$C$${costingMethods.length}`;
+    const gstRateRange = `='Lists'!$D$1:$D$${gstRates.length}`;
+
+    for (let i = 2; i <= 100; i++) {
+      worksheet.getCell(`D${i}`).dataValidation = { type: 'list', formulae: [groupRange] };
+      worksheet.getCell(`E${i}`).dataValidation = { type: 'list', formulae: [uomRange] };
+      worksheet.getCell(`G${i}`).dataValidation = { type: 'list', formulae: [gstRateRange] };
+      worksheet.getCell(`H${i}`).dataValidation = { type: 'list', formulae: [costingRange] };
+    }
+
+    // Add sample data
+    worksheet.addRow(['Laptop Dell', 'Dell Lappy', '', 'Primary', 'Nos', '8471', '18%', 'Avg. Cost']);
+    worksheet.addRow(['Mouse Wireless', '', '', 'Primary', 'Pcs', '8471', '12%', 'FIFO']);
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'Tally_StockItem_Master_Template.xlsx';
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -169,9 +209,18 @@ export const MasterCreationStep = ({ onBack, tallyData }: MasterCreationStepProp
       const jsonData = XLSX.utils.sheet_to_json(worksheet) as any[];
 
       const masters = jsonData.map(row => {
-        const rowType = String(row.Type || row.type || '').toUpperCase();
         const name = row.Name || row.name;
         if (!name) return null;
+
+        // Detect type based on columns if 'Type' is missing
+        let rowType = String(row.Type || row.type || '').toUpperCase();
+        if (!rowType) {
+          if ('GSTIN' in row || 'Address 1' in row || 'address1' in row) {
+            rowType = 'LEDGER';
+          } else if ('UOM' in row || 'uom' in row || 'HSN_Code' in row || 'hsn_code' in row) {
+            rowType = 'STOCKITEM';
+          }
+        }
 
         if (rowType.includes('LEDGER')) {
           const gstin = row.GSTIN || row.gstin || '';
@@ -481,12 +530,22 @@ export const MasterCreationStep = ({ onBack, tallyData }: MasterCreationStepProp
             />
           </div>
 
-          <button 
-            className="w-full flex items-center justify-center gap-2 text-xs text-primary hover:underline"
-            onClick={downloadExcelTemplate}
-          >
-            <FileSpreadsheet className="w-3 h-3" /> Download Advanced Bulk Master Template
-          </button>
+          <div className="grid grid-cols-2 gap-4">
+            <button 
+              className="flex flex-col items-center justify-center gap-2 p-4 border rounded-lg hover:bg-muted/50 transition-colors text-primary"
+              onClick={downloadLedgerTemplate}
+            >
+              <Book className="w-5 h-5" />
+              <span className="text-xs font-medium">Ledger Template</span>
+            </button>
+            <button 
+              className="flex flex-col items-center justify-center gap-2 p-4 border rounded-lg hover:bg-muted/50 transition-colors text-primary"
+              onClick={downloadStockItemTemplate}
+            >
+              <Package className="w-5 h-5" />
+              <span className="text-xs font-medium">Stock Item Template</span>
+            </button>
+          </div>
         </div>
       )}
 

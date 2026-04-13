@@ -521,60 +521,107 @@ export function generateTallyXML(vouchers: Voucher[], companyName: string = 'Imp
     format: false // Disable formatting for large files to prevent nesting issues
   });
 
-  const tallyMessages = vouchers.map(v => ({
-    VOUCHER: {
-      "@_REMOTEID": "",
-      "@_VCHTYPE": v.voucherType,
-      "@_ACTION": "Create",
-      "@_OBJVIEW": "Accounting Voucher View",
-      DATE: String(v.date || '').replace(/-/g, ''),
-      VOUCHERTYPENAME: v.voucherType,
-      VOUCHERNUMBER: v.voucherNumber || '',
-      PARTYLEDGERNAME: v.ledgerName,
-      PERSISTEDVIEW: "Accounting Voucher View",
-      "ALLLEDGERENTRIES.LIST": [
+  const tallyMessages = vouchers.map(v => {
+    const vt = v.voucherType.toLowerCase();
+    const isJournal = vt.includes('journal');
+    const isSales = vt.includes('sales');
+    const isPurchase = vt.includes('purchase');
+    
+    let ledgerEntries = [];
+
+    if (v.ledgerEntries && v.ledgerEntries.length > 0) {
+      // Use multi-ledger entries if provided (e.g. for Journals)
+      ledgerEntries = v.ledgerEntries.map(e => ({
+        LEDGERNAME: e.ledgerName,
+        ISDEEMEDPOSITIVE: e.isDebit ? "Yes" : "No",
+        AMOUNT: e.isDebit ? `-${e.amount}` : e.amount
+      }));
+    } else if (isJournal) {
+      // Journal fallback: Both ledgers come from the row
+      ledgerEntries = [
         {
           LEDGERNAME: v.ledgerName,
           ISDEEMEDPOSITIVE: v.isDebit ? "Yes" : "No",
-          AMOUNT: v.isDebit ? `-${v.amount}` : v.amount,
-          ...(v.inventoryEntries && v.inventoryEntries.length > 0 ? {
-            "ALLINVENTORYENTRIES.LIST": v.inventoryEntries.map(ie => ({
-              STOCKITEMNAME: ie.stockItemName,
-              ISDEEMEDPOSITIVE: v.isDebit ? "Yes" : "No",
-              RATE: ie.rate,
-              ACTUALQTY: ie.quantity,
-              BILLEDQTY: ie.quantity,
-              AMOUNT: v.isDebit ? `-${ie.amount}` : ie.amount
-            }))
-          } : {})
+          AMOUNT: v.isDebit ? `-${v.amount}` : v.amount
         },
         {
           LEDGERNAME: v.secondLedger || '',
           ISDEEMEDPOSITIVE: v.isDebit ? "No" : "Yes",
           AMOUNT: v.isDebit ? v.amount : `-${v.amount}`
         }
-      ],
-      NARRATION: v.narration2 ? `${v.narration}\n${v.narration2}` : v.narration
+      ];
+    } else if (isSales || isPurchase) {
+      // Sales/Purchase: Party Ledger + Sales/Purchase Ledger + Inventory + Tax Ledgers
+      const partyLedger = {
+        LEDGERNAME: v.secondLedger || (isSales ? 'Sales' : 'Purchase'), // Party/Customer/Supplier
+        ISDEEMEDPOSITIVE: isSales ? "Yes" : "No",
+        AMOUNT: isSales ? `-${v.amount}` : v.amount,
+        ...(v.inventoryEntries && v.inventoryEntries.length > 0 ? {
+          "ALLINVENTORYENTRIES.LIST": v.inventoryEntries.map(ie => ({
+            STOCKITEMNAME: ie.stockItemName,
+            ISDEEMEDPOSITIVE: isSales ? "No" : "Yes",
+            RATE: ie.rate,
+            ACTUALQTY: ie.quantity,
+            BILLEDQTY: ie.quantity,
+            AMOUNT: isSales ? ie.amount : `-${ie.amount}`
+          }))
+        } : {})
+      };
+
+      const mainLedger = {
+        LEDGERNAME: v.ledgerName, // Sales or Purchase Ledger
+        ISDEEMEDPOSITIVE: isSales ? "No" : "Yes",
+        AMOUNT: isSales ? (v.amount - (v.ledgerEntries?.reduce((s, e) => s + e.amount, 0) || 0)) : `-${v.amount}`
+      };
+
+      const additionalLedgers = (v.ledgerEntries || []).map(e => ({
+        LEDGERNAME: e.ledgerName,
+        ISDEEMEDPOSITIVE: e.isDebit ? "Yes" : "No",
+        AMOUNT: e.isDebit ? `-${e.amount}` : e.amount
+      }));
+
+      ledgerEntries = [partyLedger, mainLedger, ...additionalLedgers];
+    } else {
+      // Receipt/Payment/Contra: Bank/Cash Ledger + Party Ledger
+      ledgerEntries = [
+        {
+          LEDGERNAME: v.ledgerName, // Bank/Cash Account
+          ISDEEMEDPOSITIVE: v.isDebit ? "Yes" : "No",
+          AMOUNT: v.isDebit ? `-${v.amount}` : v.amount
+        },
+        {
+          LEDGERNAME: v.secondLedger || '', // Party/Income/Expense
+          ISDEEMEDPOSITIVE: v.isDebit ? "No" : "Yes",
+          AMOUNT: v.isDebit ? v.amount : `-${v.amount}`
+        }
+      ];
     }
-  }));
+
+    return {
+      TALLYMESSAGE: {
+        "@_xmlns:UDF": "TallyUDF",
+        VOUCHER: {
+          "@_VCHTYPE": v.voucherType,
+          "@_ACTION": "Create",
+          DATE: String(v.date || '').replace(/-/g, ''),
+          VOUCHERTYPENAME: v.voucherType,
+          VOUCHERNUMBER: v.voucherNumber || '',
+          PARTYLEDGERNAME: isSales || isPurchase ? (v.secondLedger || v.ledgerName) : v.ledgerName,
+          "ALLLEDGERENTRIES.LIST": ledgerEntries,
+          NARRATION: v.narration2 ? `${v.narration}\n${v.narration2}` : v.narration
+        }
+      }
+    };
+  });
 
   const xmlObj = {
     ENVELOPE: {
       HEADER: {
-        TALLYREQUEST: "Import Data"
+        TALLYREQUEST: "Execute"
       },
       BODY: {
-        IMPORTDATA: {
-          REQUESTDESC: {
-            REPORTNAME: "All Masters",
-            STATICVARIABLES: {
-              SVCURRENTCOMPANY: companyName
-            }
-          },
-          REQUESTDATA: {
-            TALLYMESSAGE: tallyMessages
-          }
-        }
+        DESC: {},
+        DATA: tallyMessages
       }
     }
   };

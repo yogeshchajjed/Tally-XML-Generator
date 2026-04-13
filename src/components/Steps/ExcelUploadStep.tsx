@@ -64,10 +64,12 @@ export const ExcelUploadStep = ({
         secondLedger: ''
       }];
 
-      dataToExport.forEach((v: any) => {
+      dataToExport.forEach((v: any, index: number) => {
         const row = headers.map(h => {
           if (h === 'Date') return v.date;
           if (h === 'Amount') return v.amount;
+          if (h === 'Debit') return v.isDebit ? v.amount : '';
+          if (h === 'Credit') return !v.isDebit ? v.amount : '';
           if (h === 'Narration') return v.narration;
           if (h === 'Narration 2') return v.narration2 || '';
           if (h === 'Voucher Number') return v.voucherNumber || '';
@@ -78,6 +80,29 @@ export const ExcelUploadStep = ({
         });
         worksheet.addRow(row);
       });
+
+      // Add validation for Journal
+      if (voucherType.toLowerCase().includes('journal')) {
+        const lastRow = dataToExport.length + 1;
+        worksheet.getCell(`G1`).value = 'Status (Dr=Cr?)';
+        worksheet.getColumn(7).width = 20;
+        
+        for (let i = 2; i <= lastRow; i++) {
+          // This is a simple per-row check, but user wants to check total.
+          // For a real check, we'd need a complex formula or just tell them to check totals.
+          // Let's add a total row at the end.
+          if (i === lastRow) {
+            const totalRow = worksheet.addRow([]);
+            totalRow.getCell(4).value = { formula: `SUM(D2:D${lastRow})` };
+            totalRow.getCell(5).value = { formula: `SUM(E2:E${lastRow})` };
+            totalRow.getCell(6).value = 'TOTAL';
+            totalRow.font = { bold: true };
+            
+            const statusCell = totalRow.getCell(7);
+            statusCell.value = { formula: `IF(D${lastRow+1}=E${lastRow+1}, "MATCHED", "MISMATCHED")` };
+          }
+        }
+      }
 
       // Auto-width
       headers.forEach((_, i) => {
@@ -254,7 +279,7 @@ export const ExcelUploadStep = ({
             ref={fileRef} 
             onChange={onUpload} 
             className="hidden" 
-            accept=".xlsx, .xls"
+            accept=".xlsx, .xls, .pdf"
           />
         </div>
       )}

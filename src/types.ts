@@ -16,6 +16,12 @@ export interface InventoryEntry {
   amount: number;
 }
 
+export interface LedgerEntry {
+  ledgerName: string;
+  amount: number;
+  isDebit: boolean;
+}
+
 export interface Voucher {
   date: string;
   voucherType: string;
@@ -27,6 +33,7 @@ export interface Voucher {
   isDebit: boolean;
   secondLedger?: string;
   inventoryEntries?: InventoryEntry[];
+  ledgerEntries?: LedgerEntry[];
 }
 
 export interface TallyData {
