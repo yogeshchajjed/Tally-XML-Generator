@@ -438,8 +438,27 @@ export function generateStockItemXML(item: any, companyName: string = 'Imported 
                 ],
                 COSTINGMETHOD: item.costingMethod || 'Avg. Cost',
                 GSTAPPLICABLE: gstApplicable,
-                HSNCODE: item.hsnCode || '',
-                GSTRATE: item.gstRate || ''
+                "GSTDETAILS.LIST": [
+                  {
+                    APPLICABLEFROM: "20240401",
+                    HSNCODE: item.hsnCode || '',
+                    TAXABILITY: "Taxable",
+                    "STATEWISEGSTDETAILS.LIST": [
+                      {
+                        STATE: "Any",
+                        "GSTRATEDETAILS.LIST": [
+                          { GSTRATETYPE: "Integrated Tax", GSTRATE: item.gstRate || 0 }
+                        ]
+                      }
+                    ]
+                  }
+                ],
+                "STANDARDPRICELIST.LIST": [
+                  {
+                    DATE: "20240401",
+                    RATE: item.rate || 0
+                  }
+                ]
               }
             }
           }
@@ -491,8 +510,27 @@ export function generateMultiMasterXML(masters: { type: 'LEDGER' | 'STOCKITEM', 
           ],
           COSTINGMETHOD: m.data.costingMethod || 'Avg. Cost',
           GSTAPPLICABLE: gstApplicable,
-          HSNCODE: m.data.hsnCode || '',
-          GSTRATE: m.data.gstRate || ''
+          "GSTDETAILS.LIST": [
+            {
+              APPLICABLEFROM: "20240401",
+              HSNCODE: m.data.hsnCode || '',
+              TAXABILITY: "Taxable",
+              "STATEWISEGSTDETAILS.LIST": [
+                {
+                  STATE: "Any",
+                  "GSTRATEDETAILS.LIST": [
+                    { GSTRATETYPE: "Integrated Tax", GSTRATE: m.data.gstRate || 0 }
+                  ]
+                }
+              ]
+            }
+          ],
+          "STANDARDPRICELIST.LIST": [
+            {
+              DATE: "20240401",
+              RATE: m.data.rate || 0
+            }
+          ]
         }
       };
     }
@@ -518,98 +556,136 @@ export function generateTallyXML(vouchers: Voucher[], companyName: string = 'Imp
   const builder = new XMLBuilder({
     ignoreAttributes: false,
     attributeNamePrefix: "@_",
-    format: false // Disable formatting for large files to prevent nesting issues
+    format: true,
+    indentBy: "  "
   });
 
   const tallyMessages = vouchers.map(v => {
     const vt = v.voucherType.toLowerCase();
-    const isJournal = vt.includes('journal');
     const isSales = vt.includes('sales');
     const isPurchase = vt.includes('purchase');
+    const isJournal = vt.includes('journal');
     
-    let ledgerEntries = [];
+    // Determine Party Ledger Name
+    const partyLedgerName = v.secondLedger || (isSales ? 'Cash' : 'Cash');
+    
+    let ledgerEntries: any[] = [];
+    let inventoryEntries: any[] = [];
+    let otherSum = 0; // Tracking net Dr/Cr to balance the Party Ledger (Debit is positive, Credit is negative)
 
-    if (v.ledgerEntries && v.ledgerEntries.length > 0) {
-      // Use multi-ledger entries if provided (e.g. for Journals)
-      ledgerEntries = v.ledgerEntries.map(e => ({
-        LEDGERNAME: e.ledgerName,
-        ISDEEMEDPOSITIVE: e.isDebit ? "Yes" : "No",
-        AMOUNT: e.isDebit ? `-${e.amount}` : e.amount
-      }));
-    } else if (isJournal) {
-      // Journal fallback: Both ledgers come from the row
-      ledgerEntries = [
-        {
-          LEDGERNAME: v.ledgerName,
-          ISDEEMEDPOSITIVE: v.isDebit ? "Yes" : "No",
-          AMOUNT: v.isDebit ? `-${v.amount}` : v.amount
-        },
-        {
-          LEDGERNAME: v.secondLedger || '',
-          ISDEEMEDPOSITIVE: v.isDebit ? "No" : "Yes",
-          AMOUNT: v.isDebit ? v.amount : `-${v.amount}`
-        }
-      ];
-    } else if (isSales || isPurchase) {
-      // Sales/Purchase: Party Ledger + Sales/Purchase Ledger + Inventory + Tax Ledgers
-      const partyLedger = {
-        LEDGERNAME: v.secondLedger || (isSales ? 'Sales' : 'Purchase'), // Party/Customer/Supplier
-        ISDEEMEDPOSITIVE: isSales ? "Yes" : "No",
-        AMOUNT: isSales ? `-${v.amount}` : v.amount,
-        ...(v.inventoryEntries && v.inventoryEntries.length > 0 ? {
-          "ALLINVENTORYENTRIES.LIST": v.inventoryEntries.map(ie => ({
-            STOCKITEMNAME: ie.stockItemName,
-            ISDEEMEDPOSITIVE: isSales ? "No" : "Yes",
-            RATE: ie.rate,
-            ACTUALQTY: ie.quantity,
-            BILLEDQTY: ie.quantity,
-            AMOUNT: isSales ? ie.amount : `-${ie.amount}`
-          }))
-        } : {})
-      };
-
-      const mainLedger = {
-        LEDGERNAME: v.ledgerName, // Sales or Purchase Ledger
-        ISDEEMEDPOSITIVE: isSales ? "No" : "Yes",
-        AMOUNT: isSales ? (v.amount - (v.ledgerEntries?.reduce((s, e) => s + e.amount, 0) || 0)) : `-${v.amount}`
-      };
-
-      const additionalLedgers = (v.ledgerEntries || []).map(e => ({
-        LEDGERNAME: e.ledgerName,
-        ISDEEMEDPOSITIVE: e.isDebit ? "Yes" : "No",
-        AMOUNT: e.isDebit ? `-${e.amount}` : e.amount
-      }));
-
-      ledgerEntries = [partyLedger, mainLedger, ...additionalLedgers];
-    } else {
-      // Receipt/Payment/Contra: Bank/Cash Ledger + Party Ledger
-      ledgerEntries = [
-        {
-          LEDGERNAME: v.ledgerName, // Bank/Cash Account
-          ISDEEMEDPOSITIVE: v.isDebit ? "Yes" : "No",
-          AMOUNT: v.isDebit ? `-${v.amount}` : v.amount
-        },
-        {
-          LEDGERNAME: v.secondLedger || '', // Party/Income/Expense
-          ISDEEMEDPOSITIVE: v.isDebit ? "No" : "Yes",
-          AMOUNT: v.isDebit ? v.amount : `-${v.amount}`
-        }
-      ];
+    // 1. Process Item Inventory if present
+    if (v.inventoryEntries && v.inventoryEntries.length > 0) {
+      inventoryEntries = v.inventoryEntries.map(ie => {
+        const isItemDebit = !isSales; // Purchase = Dr (True), Sales = Cr (False)
+        const amt = isItemDebit ? ie.amount : -ie.amount;
+        otherSum += amt;
+        
+        return {
+          STOCKITEMNAME: ie.stockItemName,
+          ISDEEMEDPOSITIVE: isItemDebit ? "Yes" : "No",
+          RATE: ie.rate.toFixed(2),
+          ACTUALQTY: ie.quantity,
+          BILLEDQTY: ie.quantity,
+          AMOUNT: (-amt).toFixed(2), // Negative for Debit, Positive for Credit in Item context usually? 
+          // Actually Tally is weird. For Invoice, Item Amount is often positive but its accounting allocation handles the sign.
+          "BATCHALLOCATIONS.LIST": [
+            {
+              GODOWNNAME: "Main Location",
+              BATCHNAME: "Primary Batch",
+              AMOUNT: (-amt).toFixed(2)
+            }
+          ],
+          "ACCOUNTINGALLOCATIONS.LIST": [
+            {
+              LEDGERNAME: v.ledgerName, // The Sales/Purchase account
+              ISDEEMEDPOSITIVE: isItemDebit ? "Yes" : "No",
+              AMOUNT: (-amt).toFixed(2)
+            }
+          ],
+          ...(ie.hsn ? {
+            "GSTOVRDETAILS.LIST": [
+              {
+                HSNCODE: ie.hsn,
+                HSNSOURCETYPE: "Specify Details Here"
+              }
+            ]
+          } : {})
+        };
+      });
+    } else if (!isJournal && !isSales && !isPurchase) {
+      // For Receipt/Payment/Contra if no inventory
+      const mainAmt = v.isDebit ? v.amount : -v.amount;
+      ledgerEntries.push({
+        LEDGERNAME: v.ledgerName,
+        ISDEEMEDPOSITIVE: v.isDebit ? "Yes" : "No",
+        AMOUNT: (-mainAmt).toFixed(2)
+      });
+      otherSum += mainAmt;
+    } else if (isJournal || ((isSales || isPurchase) && (!v.inventoryEntries || v.inventoryEntries.length === 0))) {
+      // Accounting-only Sales/Purchase or Journal
+      const mainAmt = v.isDebit ? v.amount : -v.amount;
+      ledgerEntries.push({
+        LEDGERNAME: v.ledgerName,
+        ISDEEMEDPOSITIVE: v.isDebit ? "Yes" : "No",
+        AMOUNT: (-mainAmt).toFixed(2)
+      });
+      otherSum += mainAmt;
     }
 
+    // 2. Add Additional Ledgers (GST, Round Off, etc.)
+    const additionalLedgers: any[] = [];
+    if (v.ledgerEntries && v.ledgerEntries.length > 0) {
+      v.ledgerEntries.forEach(le => {
+        const amt = le.isDebit ? le.amount : -le.amount;
+        otherSum += amt;
+        const lowerName = le.ledgerName.toLowerCase();
+        const isGST = lowerName.includes('gst') || lowerName.includes('tax');
+        
+        additionalLedgers.push({
+          LEDGERNAME: le.ledgerName,
+          METHODTYPE: isGST ? "GST" : undefined,
+          ISDEEMEDPOSITIVE: le.isDebit ? "Yes" : "No",
+          AMOUNT: (-amt).toFixed(2)
+        });
+      });
+    }
+
+    // 3. Add the Balancing Party Ledger - Place it FIRST as Tally often prefers
+    const partyAmount = -otherSum;
+    const isPartyDebit = partyAmount > 0;
+    
+    const finalLedgerEntries = [
+      {
+        LEDGERNAME: partyLedgerName,
+        ISDEEMEDPOSITIVE: isPartyDebit ? "Yes" : "No",
+        AMOUNT: (-partyAmount).toFixed(2),
+        ISPARTYLEDGER: "Yes"
+      },
+      ...additionalLedgers,
+      ...ledgerEntries
+    ];
+
+    const isInvoice = isSales || isPurchase;
+    const vDate = String(v.date || '').replace(/-/g, '');
+    const guid = `ais-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
     return {
-      TALLYMESSAGE: {
-        "@_xmlns:UDF": "TallyUDF",
-        VOUCHER: {
-          "@_VCHTYPE": v.voucherType,
-          "@_ACTION": "Create",
-          DATE: String(v.date || '').replace(/-/g, ''),
-          VOUCHERTYPENAME: v.voucherType,
-          VOUCHERNUMBER: v.voucherNumber || '',
-          PARTYLEDGERNAME: isSales || isPurchase ? (v.secondLedger || v.ledgerName) : v.ledgerName,
-          "ALLLEDGERENTRIES.LIST": ledgerEntries,
-          NARRATION: v.narration2 ? `${v.narration}\n${v.narration2}` : v.narration
-        }
+      VOUCHER: {
+        "@_VCHTYPE": v.voucherType,
+        "@_ACTION": "Create",
+        "@_OBJVIEW": isInvoice ? "Invoice Voucher View" : "Accounting Voucher View",
+        DATE: vDate,
+        VOUCHERTYPENAME: v.voucherType,
+        VOUCHERNUMBER: v.voucherNumber || '',
+        PARTYLEDGERNAME: partyLedgerName,
+        ISINVOICE: isInvoice ? "Yes" : "No",
+        REFERENCE: v.reference || '',
+        REFERENCEDATE: v.referenceDate ? String(v.referenceDate).replace(/-/g, '') : vDate,
+        VCHSTATUSDATE: vDate,
+        GUID: guid,
+        "ALLINVENTORYENTRIES.LIST": inventoryEntries,
+        "LEDGERENTRIES.LIST": finalLedgerEntries,
+        NARRATION: v.narration2 ? `${v.narration}\n${v.narration2}` : v.narration
       }
     };
   });
@@ -617,11 +693,34 @@ export function generateTallyXML(vouchers: Voucher[], companyName: string = 'Imp
   const xmlObj = {
     ENVELOPE: {
       HEADER: {
-        TALLYREQUEST: "Execute"
+        TALLYREQUEST: "Import Data"
       },
       BODY: {
-        DESC: {},
-        DATA: tallyMessages
+        IMPORTDATA: {
+          REQUESTDESC: {
+            REPORTNAME: "All Masters",
+            STATICVARIABLES: {
+              SVCURRENTCOMPANY: companyName
+            }
+          },
+          REQUESTDATA: {
+            TALLYMESSAGE: [
+              ...tallyMessages.map(m => ({
+                "@_xmlns:UDF": "TallyUDF",
+                ...m
+              })),
+              {
+                "@_xmlns:UDF": "TallyUDF",
+                COMPANY: {
+                  "REMOTECMPINFO.LIST": {
+                    "@_MERGE": "Yes",
+                    REMOTECMPNAME: companyName
+                  }
+                }
+              }
+            ]
+          }
+        }
       }
     }
   };

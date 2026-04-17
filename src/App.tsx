@@ -13,6 +13,7 @@ import { LogIn, LogOut, User as UserIcon, Sparkles, Brain } from 'lucide-react';
 
 import { parseTallyXML, generateTallyXML, fetchFromTally, generateMultiMasterXML } from './lib/tally';
 import { suggestLedgersBatch, parseBankStatementPDF, parseBillPDF } from './lib/gemini';
+import { downloadVoucherExcel } from './lib/excel';
 import { TallyData, Voucher, LedgerEntry, InventoryEntry } from './types';
 import { auth, signInWithGoogle, logout, db } from './firebase';
 import { collection, addDoc, query, where, getDocs, serverTimestamp } from 'firebase/firestore';
@@ -27,10 +28,11 @@ import { ReviewStep } from './components/Steps/ReviewStep';
 import { MasterCreationStep } from './components/Steps/MasterCreationStep';
 import { ColumnMappingStep } from './components/Steps/ColumnMappingStep';
 import { PDFPageRangeStep } from './components/Steps/PDFPageRangeStep';
+import { PurchaseExcelMappingStep, PurchaseMapping } from './components/Steps/PurchaseExcelMappingStep';
 import { DoneStep } from './components/Steps/DoneStep';
 import { GeminiAssistant } from './components/GeminiAssistant';
 
-type Step = 'TALLY_DATA' | 'VOUCHER_TYPE' | 'ACCOUNT_SELECT' | 'EXCEL_UPLOAD' | 'REVIEW' | 'DONE' | 'MASTER_CREATION' | 'COLUMN_MAPPING' | 'PDF_PAGE_RANGE';
+type Step = 'TALLY_DATA' | 'VOUCHER_TYPE' | 'ACCOUNT_SELECT' | 'EXCEL_UPLOAD' | 'REVIEW' | 'DONE' | 'MASTER_CREATION' | 'COLUMN_MAPPING' | 'PDF_PAGE_RANGE' | 'PURCHASE_MAPPING';
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -68,6 +70,8 @@ export default function App() {
   const [isSaving, setIsSaving] = useState(false);
   const [progress, setProgress] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
+  const [purchaseWorkbook, setPurchaseWorkbook] = useState<XLSX.WorkBook | null>(null);
+  const [purchasePreview, setPurchasePreview] = useState<any[][]>([]);
   const itemsPerPage = 50;
 
   const tallyFileRef = useRef<HTMLInputElement>(null);
@@ -84,6 +88,7 @@ export default function App() {
   const handleSaveToCloud = async () => {
     if (!user || vouchers.length === 0) return;
     setIsSaving(true);
+    setProgress(1);
     try {
       const batch = vouchers.map(v => ({
         ...v,
@@ -93,9 +98,12 @@ export default function App() {
       
       // Save in small chunks to Firestore
       const chunkSize = 10;
+      let completed = 0;
       for (let i = 0; i < batch.length; i += chunkSize) {
         const chunk = batch.slice(i, i + chunkSize);
         await Promise.all(chunk.map(v => addDoc(collection(db, 'vouchers'), v)));
+        completed += chunk.length;
+        setProgress(Math.round((completed / batch.length) * 100));
       }
       
       toast.success('Vouchers saved to cloud successfully');
@@ -103,7 +111,11 @@ export default function App() {
       console.error('Error saving to Firestore:', error);
       toast.error('Failed to save vouchers to cloud');
     } finally {
-      setIsSaving(false);
+      setProgress(100);
+      setTimeout(() => {
+        setIsSaving(false);
+        setProgress(0);
+      }, 1000);
     }
   };
 
@@ -141,6 +153,15 @@ export default function App() {
       </option>
     ));
   }, [filteredAccounts]);
+
+  const handleDownloadExcel = async () => {
+    try {
+      await downloadVoucherExcel(selectedVoucherType, vouchers, tallyData);
+      toast.success('Excel generated successfully');
+    } catch (error) {
+      toast.error('Failed to generate Excel');
+    }
+  };
 
   const handleTallyUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
@@ -268,7 +289,9 @@ export default function App() {
     setStep('EXCEL_UPLOAD');
     
     if (newVouchers.length > 0) {
-      runAIMapping(newVouchers);
+      runAIMapping(newVouchers).then(() => {
+        // Optional: auto-proceed or just stay to show "AI Ready"
+      });
       toast.success(`Found ${newVouchers.length} entries. ${foundDuplicates.length} duplicates skipped.`);
     } else {
       setIsProcessing(false);
@@ -308,25 +331,41 @@ export default function App() {
 
     let withdrawal = 0;
     let deposit = 0;
+    let detectedNarration = String(row[mapping.narration] || row.Narration || row.narration || row.Description || row.description || row.Particulars || row.particulars || '');
 
     const hasWithdrawalMapping = !!mapping.withdrawal;
     const hasDepositMapping = !!mapping.deposit;
+    const hasAmountMapping = !!mapping.amount;
+
+    const rawW = hasWithdrawalMapping ? String(row[mapping.withdrawal] || '').trim() : '';
+    const rawD = hasDepositMapping ? String(row[mapping.deposit] || '').trim() : '';
 
     if (hasWithdrawalMapping && hasDepositMapping && mapping.withdrawal !== mapping.deposit) {
       // Case 1: Both columns are mapped separately
       const wVal = parseAmt(row[mapping.withdrawal]);
       const dVal = parseAmt(row[mapping.deposit]);
       
-      withdrawal = Math.abs(wVal);
-      deposit = Math.abs(dVal);
-      
-      // If both are non-zero, usually one is a placeholder or it's a weird format
-      if (wVal !== 0 && dVal === 0) {
+      if (wVal !== 0 || dVal !== 0) {
         withdrawal = Math.abs(wVal);
-        deposit = 0;
-      } else if (dVal !== 0 && wVal === 0) {
         deposit = Math.abs(dVal);
-        withdrawal = 0;
+        
+        if (wVal !== 0 && dVal === 0) {
+          withdrawal = Math.abs(wVal);
+          deposit = 0;
+        } else if (dVal !== 0 && wVal === 0) {
+          deposit = Math.abs(dVal);
+          withdrawal = 0;
+        }
+      } else if (hasAmountMapping) {
+        // If amounts are 0 but we have an amount column, check if these columns contain names (indicators)
+        const amt = Math.abs(parseAmt(row[mapping.amount]));
+        if (rawW && !rawD) {
+          withdrawal = amt;
+          if (!detectedNarration.includes(rawW)) detectedNarration = rawW + (detectedNarration ? ' - ' + detectedNarration : '');
+        } else if (rawD && !rawW) {
+          deposit = amt;
+          if (!detectedNarration.includes(rawD)) detectedNarration = rawD + (detectedNarration ? ' - ' + detectedNarration : '');
+        }
       }
     } else if (hasWithdrawalMapping && !hasDepositMapping) {
       // Case 2: ONLY Withdrawal column is mapped
@@ -350,15 +389,17 @@ export default function App() {
         const rawAmt = parseAmt(row[amountKey]);
         const amt = Math.abs(rawAmt);
         const type = mapping.type ? String(row[mapping.type] || '').trim().toLowerCase() : '';
-        const narration = String(row[mapping.narration] || '').toLowerCase();
+        const narration = detectedNarration.toLowerCase();
         
         // Improved Dr/Cr detection including checking the amount string itself
         const isDr = type === 'd' || type === 'dr' || type.includes('withdrawal') || type.includes('payment') || type.includes('debit') || 
                      rawVal.includes('dr') || rawVal.includes('debit') || rawVal.includes('payment') ||
+                     mapping.amount?.toLowerCase().includes('debit') || mapping.amount?.toLowerCase().includes('withdrawal') ||
                      /\bdr\b/.test(narration);
                      
         const isCr = type === 'c' || type === 'cr' || type.includes('deposit') || type.includes('receipt') || type.includes('credit') || 
                      rawVal.includes('cr') || rawVal.includes('credit') || rawVal.includes('receipt') ||
+                     mapping.amount?.toLowerCase().includes('credit') || mapping.amount?.toLowerCase().includes('deposit') ||
                      /\bcr\b/.test(narration);
 
         if (isDr) {
@@ -399,15 +440,16 @@ export default function App() {
       voucherNumber: '',
       ledgerName: selectedAccount,
       amount,
-      narration: String(row[mapping.narration] || ''),
+      narration: detectedNarration,
       narration2: 'From Bank Statement',
       isDebit: isVoucherReceipt,
-      secondLedger: ''
+      secondLedger: row['Credit Name'] || row['Debit Name'] || row['Paid To'] || row['Received From'] || row['Customer'] || row['Supplier'] || row['Debit Ledger'] || row['Credit Ledger'] || row['To Account'] || row['From Account'] || row['Description'] || row['description'] || ''
     };
   };
 
   const handleManualMappingComplete = (mapping: any) => {
     setIsProcessing(true);
+    setProgress(1);
     console.log('Manual mapping complete. Mapping:', mapping);
     console.log('Raw data rows:', rawStatementData.length);
     
@@ -419,7 +461,29 @@ export default function App() {
           const localDate = new Date(val.getTime() - (offset * 60 * 1000));
           return localDate.toISOString().split('T')[0];
         }
-        return String(val);
+        let str = String(val).trim();
+        // Remove common prefixes
+        str = str.replace(/^(dated|date|on|at|as on)[:\s]*/i, '').trim();
+        
+        // Check for YYYY-MM-DD format first
+        const ymdMatch = str.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
+        if (ymdMatch) {
+          const y = ymdMatch[1];
+          const m = ymdMatch[2].padStart(2, '0');
+          const d = ymdMatch[3].padStart(2, '0');
+          return `${y}-${m}-${d}`;
+        }
+
+        const dmyMatch = str.match(/(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})/);
+        if (dmyMatch) {
+          let d = dmyMatch[1].padStart(2, '0');
+          let m = dmyMatch[2].padStart(2, '0');
+          let y = dmyMatch[3];
+          if (y.length === 2) y = '20' + y;
+          if (parseInt(d) > 31) return `${d}-${m}-${y.padStart(2, '0')}`;
+          return `${y}-${m}-${d}`;
+        }
+        return str;
       };
 
       const mappedVouchers = rawStatementData
@@ -466,20 +530,18 @@ export default function App() {
         return;
       }
       
-      const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: '' }) as any[];
-
-      const formatDate = (val: any) => {
-        if (!val) return new Date().toISOString().split('T')[0];
-        if (val instanceof Date) {
-          const offset = val.getTimezoneOffset();
-          const localDate = new Date(val.getTime() - (offset * 60 * 1000));
-          return localDate.toISOString().split('T')[0];
-        }
-        return String(val);
-      };
-
+      const rawRows = XLSX.utils.sheet_to_json(worksheet, { defval: '' }) as any[];
       const keys = rows[0].map((k, i) => k ? String(k).trim() : `Column ${i + 1}`);
       
+      // Normalize jsonData keys to match trimmed keys
+      const jsonData = rawRows.map(row => {
+        const newRow: any = {};
+        Object.keys(row).forEach(key => {
+          newRow[key.trim()] = row[key];
+        });
+        return newRow;
+      });
+
       // Try to identify columns
       const dateKey = keys.find(k => {
         const lk = k.toLowerCase();
@@ -569,7 +631,7 @@ export default function App() {
     
     try {
       setIsProcessing(true);
-      setProgress(0);
+      setProgress(1);
       console.log(`Starting PDF extraction for ${pdfFile.file.name}, pages ${start} to ${end}`);
       toast.info(`Initializing analysis for pages ${start} to ${end}...`);
 
@@ -690,6 +752,191 @@ export default function App() {
       toast.error(error.message || 'Failed to extract data from PDF');
     } finally {
       setIsProcessing(false);
+      setProgress(0);
+    }
+  };
+
+  const handlePurchaseMappingComplete = (mapping: PurchaseMapping) => {
+    if (!purchaseWorkbook) return;
+    setIsProcessing(true);
+    
+    try {
+      const colToIndex = (col: string) => {
+        let index = 0;
+        for (let i = 0; i < col.length; i++) {
+          index = index * 26 + col.charCodeAt(i) - 64;
+        }
+        return index - 1;
+      };
+
+      const parseCell = (cell: string) => {
+        const match = cell.match(/([A-Z]+)(\d+)/);
+        if (!match) return null;
+        return {
+          r: parseInt(match[2]) - 1,
+          c: colToIndex(match[1])
+        };
+      };
+
+      const formatDate = (val: any) => {
+        if (!val) return new Date().toISOString().split('T')[0];
+        if (val instanceof Date) {
+          const offset = val.getTimezoneOffset();
+          const localDate = new Date(val.getTime() - (offset * 60 * 1000));
+          return localDate.toISOString().split('T')[0];
+        }
+        let str = String(val).trim();
+        // Remove common prefixes
+        str = str.replace(/^(dated|date|on|at|as on)[:\s]*/i, '').trim();
+        
+        // Check for YYYY-MM-DD format first
+        const ymdMatch = str.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
+        if (ymdMatch) {
+          const y = ymdMatch[1];
+          const m = ymdMatch[2].padStart(2, '0');
+          const d = ymdMatch[3].padStart(2, '0');
+          return `${y}-${m}-${d}`;
+        }
+
+        const dmyMatch = str.match(/(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})/);
+        if (dmyMatch) {
+          let d = dmyMatch[1].padStart(2, '0');
+          let m = dmyMatch[2].padStart(2, '0');
+          let y = dmyMatch[3];
+          if (y.length === 2) y = '20' + y;
+          if (parseInt(d) > 31) return `${d}-${m}-${y.padStart(2, '0')}`;
+          return `${y}-${m}-${d}`;
+        }
+        return str;
+      };
+
+      const finalVouchers: Voucher[] = [];
+
+      purchaseWorkbook.SheetNames.forEach(sheetName => {
+        const sheet = purchaseWorkbook.Sheets[sheetName];
+        const data = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' }) as any[][];
+        
+        // Extract Header Info
+        const supplierPos = parseCell(mapping.supplierCell);
+        const datePos = parseCell(mapping.dateCell);
+        const invNoPos = parseCell(mapping.invoiceNumberCell);
+
+        const supplierName = supplierPos ? String(data[supplierPos.r]?.[supplierPos.c] || '') : '';
+        const invoiceDate = datePos ? formatDate(data[datePos.r]?.[datePos.c]) : formatDate(new Date());
+        const invoiceNumber = invNoPos ? String(data[invNoPos.r]?.[invNoPos.c] || '') : '';
+
+        if (!supplierName && !invoiceNumber) return; // Skip empty sheets
+
+        // Extract Items
+        const inventoryEntries: InventoryEntry[] = [];
+        const ledgerEntriesMap = new Map<string, { ledgerName: string, amount: number, isDebit: boolean }>();
+        const isSalesVch = selectedVoucherType.toLowerCase().includes('sales');
+        const isPurchaseVch = !isSalesVch;
+
+        const descIdx = colToIndex(mapping.descriptionCol);
+        const hsnIdx = colToIndex(mapping.hsnCol);
+        const qtyIdx = colToIndex(mapping.quantityCol);
+        const rateIdx = colToIndex(mapping.rateCol);
+        const amtIdx = colToIndex(mapping.amountCol);
+        
+        const cgstIdx = mapping.cgstCol ? colToIndex(mapping.cgstCol) : -1;
+        const sgstIdx = mapping.sgstCol ? colToIndex(mapping.sgstCol) : -1;
+        const igstIdx = mapping.igstCol ? colToIndex(mapping.igstCol) : -1;
+
+        for (let r = mapping.itemsStartRow - 1; r < data.length; r++) {
+          const row = data[r];
+          const description = String(row[descIdx] || '').trim();
+          const amount = parseFloat(row[amtIdx] || 0);
+
+          if (description && !isNaN(amount) && amount !== 0) {
+            const descLower = description.toLowerCase();
+            const isTax = descLower.includes('cgst') || descLower.includes('sgst') || descLower.includes('igst') || 
+                          descLower.includes('tax') || descLower.includes('gst') || descLower.includes('round off') ||
+                          descLower.includes('freight') || descLower.includes('discount');
+
+            if (isTax) {
+              const key = `${description.toUpperCase().trim()}_${isPurchaseVch}`;
+              const existing = ledgerEntriesMap.get(key);
+              if (existing) {
+                existing.amount += Math.abs(amount);
+              } else {
+                ledgerEntriesMap.set(key, { ledgerName: description, amount: Math.abs(amount), isDebit: isPurchaseVch });
+              }
+            } else {
+              inventoryEntries.push({
+                stockItemName: description,
+                hsn: String(row[hsnIdx] || '').trim(),
+                quantity: parseFloat(row[qtyIdx] || 0),
+                rate: parseFloat(row[rateIdx] || 0),
+                amount: Math.abs(amount)
+              });
+            }
+          }
+
+          // Check for GST in separate columns on this row
+          const processTaxCol = (idx: number, name: string) => {
+            if (idx >= 0) {
+              const val = parseFloat(row[idx] || 0);
+              if (val !== 0) {
+                const key = `${name.toUpperCase().trim()}_${isPurchaseVch}`;
+                const existing = ledgerEntriesMap.get(key);
+                if (existing) {
+                  existing.amount += Math.abs(val);
+                } else {
+                  ledgerEntriesMap.set(key, { ledgerName: name, amount: Math.abs(val), isDebit: isPurchaseVch });
+                }
+              }
+            }
+          };
+
+          processTaxCol(cgstIdx, 'CGST');
+          processTaxCol(sgstIdx, 'SGST');
+          processTaxCol(igstIdx, 'IGST');
+        }
+
+        const ledgerEntries = Array.from(ledgerEntriesMap.values());
+
+        if (inventoryEntries.length > 0 || ledgerEntries.length > 0) {
+          const totalInventory = inventoryEntries.reduce((sum, ie) => sum + ie.amount, 0);
+          const extraAmount = ledgerEntries.reduce((sum, le) => {
+            if (isPurchaseVch) {
+              return sum + (le.isDebit ? le.amount : -le.amount);
+            } else {
+              return sum + (!le.isDebit ? le.amount : -le.amount);
+            }
+          }, 0);
+
+          finalVouchers.push({
+            date: invoiceDate,
+            voucherType: selectedVoucherType,
+            voucherNumber: invoiceNumber,
+            ledgerName: selectedAccount || (isSalesVch ? 'Sales' : 'Purchase'),
+            amount: totalInventory,
+            partyAmount: totalInventory + extraAmount,
+            narration: `Invoice ${invoiceNumber} from ${supplierName}`,
+            isDebit: !isSalesVch, // Purchase = true (Dr), Sales = false (Cr)
+            secondLedger: supplierName,
+            inventoryEntries,
+            ledgerEntries: ledgerEntries as any[]
+          });
+        }
+      });
+
+      if (finalVouchers.length === 0) {
+        toast.error('No valid data found with the provided mapping.');
+        setIsProcessing(false);
+        return;
+      }
+
+      setVouchers(finalVouchers);
+      setDuplicates([]);
+      setCurrentPage(1);
+      setStep('REVIEW');
+    } catch (error) {
+      console.error('Purchase mapping error:', error);
+      toast.error('Failed to process Excel with provided mapping.');
+    } finally {
+      setIsProcessing(false);
     }
   };
 
@@ -708,8 +955,42 @@ export default function App() {
       setIsProcessing(true);
       const data = await file.arrayBuffer();
       const workbook = XLSX.read(data, { cellDates: true });
-      const worksheet = workbook.Sheets[workbook.SheetNames[0]];
-      const jsonData = XLSX.utils.sheet_to_json(worksheet) as any[];
+
+      // If it's a Purchase/Sales voucher, check if it matches our template
+      if (selectedVoucherType.toLowerCase().includes('purchase') || selectedVoucherType.toLowerCase().includes('sales')) {
+        const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json(firstSheet, { header: 1 }) as any[][];
+        const headers = rows[0] || [];
+        
+        // Check if it's our template (has 'Stock Item' and 'Quantity' and 'Rate' and 'Amount')
+        const isTemplate = headers.some(h => String(h).toLowerCase().includes('stock item')) && 
+                          headers.some(h => String(h).toLowerCase().includes('quantity')) &&
+                          headers.some(h => String(h).toLowerCase().includes('rate'));
+
+        if (!isTemplate) {
+          setPurchaseWorkbook(workbook);
+          const preview = XLSX.utils.sheet_to_json(firstSheet, { header: 1, defval: '' }) as any[][];
+          setPurchasePreview(preview);
+          setStep('PURCHASE_MAPPING');
+          setIsProcessing(false);
+          return;
+        }
+      }
+
+      const jsonData: any[] = [];
+      
+      workbook.SheetNames.forEach(sheetName => {
+        const sheetRows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName]) as any[];
+        sheetRows.forEach(row => {
+          (row as any)._sheetName = sheetName;
+          jsonData.push(row);
+        });
+      });
+
+      if (jsonData.length === 0) {
+        toast.error('Excel file is empty');
+        return;
+      }
 
       const formatDate = (val: any) => {
         if (!val) return new Date().toISOString().split('T')[0];
@@ -719,7 +1000,29 @@ export default function App() {
           const localDate = new Date(val.getTime() - (offset * 60 * 1000));
           return localDate.toISOString().split('T')[0];
         }
-        return String(val);
+        let str = String(val).trim();
+        // Remove common prefixes
+        str = str.replace(/^(dated|date|on|at|as on)[:\s]*/i, '').trim();
+        
+        // Check for YYYY-MM-DD format first
+        const ymdMatch = str.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
+        if (ymdMatch) {
+          const y = ymdMatch[1];
+          const m = ymdMatch[2].padStart(2, '0');
+          const d = ymdMatch[3].padStart(2, '0');
+          return `${y}-${m}-${d}`;
+        }
+
+        const dmyMatch = str.match(/(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})/);
+        if (dmyMatch) {
+          let d = dmyMatch[1].padStart(2, '0');
+          let m = dmyMatch[2].padStart(2, '0');
+          let y = dmyMatch[3];
+          if (y.length === 2) y = '20' + y;
+          if (parseInt(d) > 31) return `${d}-${m}-${y.padStart(2, '0')}`;
+          return `${y}-${m}-${d}`;
+        }
+        return str;
       };
 
       const isJournalType = selectedVoucherType.toLowerCase().includes('journal');
@@ -731,7 +1034,7 @@ export default function App() {
         // Group by Voucher Number
         const groups: { [key: string]: any[] } = {};
         jsonData.forEach(row => {
-          const vNum = String(row['Voucher Number'] || row.voucher_number || 'UNNUMBERED');
+          const vNum = String(row['Voucher Number'] || row.voucher_number || `SHEET_${row._sheetName}_UNNUMBERED`);
           if (!groups[vNum]) groups[vNum] = [];
           groups[vNum].push(row);
         });
@@ -758,7 +1061,7 @@ export default function App() {
           const voucher: Voucher = {
             date: formatDate(firstRow.Date || firstRow.date),
             voucherType: selectedVoucherType,
-            voucherNumber: vNum === 'UNNUMBERED' ? '' : vNum,
+            voucherNumber: vNum.includes('UNNUMBERED') ? '' : vNum,
             ledgerName: ledgerEntries[0]?.ledgerName || '',
             amount: totalDr, // Total debit amount
             narration: String(firstRow.Narration || firstRow.narration || ''),
@@ -771,7 +1074,7 @@ export default function App() {
         // Group by Voucher Number for Sales/Purchase to support multiple stock items
         const groups: { [key: string]: any[] } = {};
         jsonData.forEach(row => {
-          const vNum = String(row['Voucher Number'] || row.voucher_number || 'UNNUMBERED_' + Math.random());
+          const vNum = String(row['Voucher Number'] || row.voucher_number || `SHEET_${row._sheetName}`);
           if (!groups[vNum]) groups[vNum] = [];
           groups[vNum].push(row);
         });
@@ -779,33 +1082,155 @@ export default function App() {
         Object.entries(groups).forEach(([vNum, rows]) => {
           const firstRow = rows[0];
           const inventoryEntries: InventoryEntry[] = rows.map(r => {
-            const stockItem = r['Stock Item'] || r['stock_item'];
-            const quantity = parseFloat(r['Quantity'] || r['qty'] || 0);
-            const rate = parseFloat(r['Rate'] || r['rate'] || 0);
-            if (stockItem && quantity > 0) {
+            const rKeys = Object.keys(r);
+            const getItem = (names: string[]) => {
+              const key = rKeys.find(k => names.includes(k.toLowerCase()));
+              return key ? r[key] : null;
+            };
+            
+            const stockItem = getItem(['stock item', 'item name', 'stock_item']);
+            const quantity = parseFloat(getItem(['quantity', 'qty']) || 0);
+            const rate = parseFloat(getItem(['rate']) || 0);
+            const amount = parseFloat(getItem(['amount']) || 0);
+            const hsn = getItem(['hsn']) || '';
+            const gstRate = parseFloat(getItem(['gst rate', 'gst_rate']) || 0);
+            
+            if (stockItem && (quantity > 0 || amount > 0)) {
               return {
                 stockItemName: stockItem,
+                hsn: String(hsn).trim(),
+                gstRate,
                 quantity,
                 rate,
-                amount: quantity * rate
+                amount: amount || (quantity * rate)
               };
             }
             return null;
           }).filter(Boolean) as InventoryEntry[];
 
           const totalAmount = inventoryEntries.reduce((sum, ie) => sum + ie.amount, 0);
+          
+          const firstRowKeys = Object.keys(firstRow);
+          const getVal = (names: string[]) => {
+            const key = firstRowKeys.find(k => names.includes(k.toLowerCase()));
+            return key ? firstRow[key] : null;
+          };
+
+          const rowLedger = getVal(['sales ledger', 'purchase ledger', 'ledger_name']);
+          const refNo = getVal(['supplier invoice number', 'invoice number', 'reference']) || '';
+          const refDate = getVal(['supplier invoice date', 'invoice date']) || '';
+
+          // Collect additional ledger entries (GST and others) from ALL rows in the group
+          const ledgerEntriesMap = new Map<string, { ledgerName: string, amount: number, isDebit: boolean }>();
+          const isPurchaseVch = selectedVoucherType.toLowerCase().includes('purchase');
+          const isSalesVch = selectedVoucherType.toLowerCase().includes('sales');
+
+          rows.forEach(row => {
+            const rowKeys = Object.keys(row);
+            
+            // GST Ledgers - Flexible matching
+            ['CGST', 'SGST', 'IGST'].forEach(type => {
+              const lowerType = type.toLowerCase();
+              
+              // Find Ledger Name Column
+              let ledgerKey = rowKeys.find(k => {
+                const lk = k.toLowerCase();
+                return lk === `${lowerType} ledger` || lk === `${lowerType}_ledger` || lk === `${lowerType} name`;
+              });
+
+              // Find Amount Column
+              let amountKey = rowKeys.find(k => {
+                const lk = k.toLowerCase();
+                return lk === `${lowerType} amount` || lk === `${lowerType}_amount` || lk === lowerType || lk === `${lowerType} amt`;
+              });
+              
+              if (amountKey) {
+                const lName = ledgerKey ? String(row[ledgerKey] || '').trim() : type; // Default to type (e.g. CGST) if no specific ledger name col
+                const lAmount = parseFloat(row[amountKey] || 0);
+                
+                if (!isNaN(lAmount) && lAmount !== 0) {
+                  const key = `${lName.toUpperCase().trim()}_${isPurchaseVch}`;
+                  const existing = ledgerEntriesMap.get(key);
+                  if (existing) {
+                    existing.amount += Math.abs(lAmount);
+                  } else {
+                    ledgerEntriesMap.set(key, {
+                      ledgerName: lName,
+                      amount: Math.abs(lAmount),
+                      isDebit: isPurchaseVch
+                    });
+                  }
+                }
+              }
+            });
+
+            // Additional Ledgers - Base column identification
+            rowKeys.forEach(key => {
+              const normalizedKey = key.toLowerCase();
+              const match = normalizedKey.match(/^additional ledger\s*(\d+)$/);
+              if (match) {
+                const i = match[1];
+                const lName = String(row[key] || '').trim();
+                
+                // Find corresponding amount and type keys
+                const amountKey = rowKeys.find(k => k.toLowerCase() === `al${i} amount` || k.toLowerCase() === `additional ledger ${i} amount`);
+                const typeKey = rowKeys.find(k => k.toLowerCase() === `al${i} type` || k.toLowerCase() === `additional ledger ${i} type`);
+                
+                const lAmount = amountKey ? parseFloat(row[amountKey] || 0) : 0;
+                const lType = typeKey ? String(row[typeKey] || '').toUpperCase() : '';
+                
+                if (lName && !isNaN(lAmount) && lAmount !== 0) {
+                  let isDebit = isPurchaseVch;
+                  if (lType === 'DR' || lType === 'DEBIT') isDebit = true;
+                  if (lType === 'CR' || lType === 'CREDIT') isDebit = false;
+                  
+                  const keyMap = `${lName.toUpperCase().trim()}_${isDebit}`;
+                  const existing = ledgerEntriesMap.get(keyMap);
+                  if (existing) {
+                    existing.amount += Math.abs(lAmount);
+                  } else {
+                    ledgerEntriesMap.set(keyMap, {
+                      ledgerName: lName,
+                      amount: Math.abs(lAmount),
+                      isDebit: isDebit
+                    });
+                  }
+                }
+              }
+            });
+          });
+
+          const ledgerEntries = Array.from(ledgerEntriesMap.values()) as any[];
+
+          // Total amount should include everything for the party ledger
+          // We calculate the net effect of additional ledgers on the primary side (Dr for Pur, Cr for Sales)
+          const extraAmount = ledgerEntries.reduce((sum, le) => {
+            if (isPurchaseVch) {
+              // Purchase is Dr. Extra Dr adds to total, Cr subtracts.
+              return sum + (le.isDebit ? le.amount : -le.amount);
+            } else {
+              // Sales is Cr. Extra Cr adds to total, Dr subtracts.
+              return sum + (!le.isDebit ? le.amount : -le.amount);
+            }
+          }, 0);
+
+          const partyName = getVal(['customer', 'supplier', 'party name', 'customer name', 'supplier name', 'party_name', 'paid to', 'received from', 'debit ledger', 'credit ledger', 'to account', 'from account', 'party', 'account name', 'ledger name', 'ledger_name', 'party ledger']);
 
           const voucher: Voucher = {
             date: formatDate(firstRow.Date || firstRow.date),
             voucherType: selectedVoucherType,
-            voucherNumber: vNum.startsWith('UNNUMBERED_') ? '' : vNum,
-            ledgerName: selectedAccount || (selectedVoucherType.toLowerCase().includes('sales') ? 'Sales' : 'Purchase'),
-            amount: totalAmount || Math.abs(parseFloat(firstRow.Amount || firstRow.amount || 0)),
-            narration: firstRow.Narration || firstRow.narration || '',
+            voucherNumber: (vNum.includes('UNNUMBERED') || vNum.startsWith('SHEET_')) ? '' : vNum,
+            ledgerName: String(rowLedger || selectedAccount || (isSalesVch ? 'Sales' : 'Purchase')),
+            amount: totalAmount, // For Sales/Purchase, amount is the BASE account amount. Tally.ts balances it with taxes.
+            partyAmount: totalAmount + extraAmount,
+            narration: firstRow.Narration || firstRow.narration || (partyName ? `Invoice ${vNum} to ${partyName}` : ''),
             narration2: firstRow['Narration 2'] || firstRow.narration2 || '',
-            isDebit: selectedVoucherType.toLowerCase().includes('sales'),
-            secondLedger: firstRow['Paid To'] || firstRow['Received From'] || firstRow['Customer'] || firstRow['Supplier'] || firstRow['Debit Ledger'] || firstRow['Credit Ledger'] || firstRow['To Account'] || firstRow['From Account'] || '',
-            inventoryEntries
+            isDebit: !isSalesVch, // Purchase (Dr) = true, Sales (Cr) = false
+            secondLedger: String(partyName || ''),
+            inventoryEntries,
+            ledgerEntries,
+            reference: String(refNo).trim(),
+            referenceDate: refDate ? formatDate(refDate) : ''
           };
           finalVouchers.push(voucher);
         });
@@ -817,10 +1242,10 @@ export default function App() {
             voucherNumber: String(row['Voucher Number'] || row.voucher_number || ''),
             ledgerName: selectedAccount,
             amount: Math.abs(parseFloat(row.Amount || row.amount || 0)),
-            narration: row.Narration || row.narration || '',
+            narration: row.Narration || row.narration || row.Description || row.description || row.Particulars || row.particulars || '',
             narration2: row['Narration 2'] || row.narration2 || '',
             isDebit: selectedVoucherType.toLowerCase().includes('receipt') || selectedVoucherType.toLowerCase().includes('sales'),
-            secondLedger: row['Paid To'] || row['Received From'] || row['Customer'] || row['Supplier'] || row['Debit Ledger'] || row['Credit Ledger'] || row['To Account'] || row['From Account'] || ''
+            secondLedger: row['Credit Name'] || row['Debit Name'] || row['Paid To'] || row['Received From'] || row['Customer'] || row['Supplier'] || row['Debit Ledger'] || row['Credit Ledger'] || row['To Account'] || row['From Account'] || row['Description'] || row['description'] || ''
           };
           return voucher;
         });
@@ -864,8 +1289,9 @@ export default function App() {
       setDuplicates(foundDuplicates);
       setVouchers(finalVouchers);
       setCurrentPage(1);
+      
+      // Skip AI mapping for simple Excel uploads as requested
       setStep('REVIEW');
-      runAIMapping(finalVouchers);
     } catch (error) {
       console.error(error);
       toast.error('Failed to parse Excel file');
@@ -877,11 +1303,11 @@ export default function App() {
   const runAIMapping = async (initialVouchers: Voucher[]) => {
     if (!tallyData) return;
     setIsProcessing(true);
-    setProgress(0);
+    setProgress(1);
     const updatedVouchers = [...initialVouchers];
     const ledgerNames = tallyData.ledgers.map(l => l.name);
-    const batchSize = 100; // Larger batch size to reduce number of requests
-    const concurrencyLimit = 1; // Process 1 batch at a time to stay within free tier RPM limits
+    const batchSize = 20; // Smaller batch size for better progress granularity
+    const concurrencyLimit = 1; 
 
     // Prepare historical context for AI
     const previousVouchers = (tallyData.transactions || [])
@@ -913,8 +1339,12 @@ export default function App() {
           
           suggestions.forEach((suggestion, sIndex) => {
             const actualIndex = batch.index + sIndex;
-            if (actualIndex < updatedVouchers.length && suggestion && suggestion !== "UNKNOWN") {
-              updatedVouchers[actualIndex] = { ...updatedVouchers[actualIndex], secondLedger: suggestion };
+            if (actualIndex < updatedVouchers.length && suggestion) {
+              // Only apply if it's a known ledger or "Suspense"
+              const isKnown = ledgerNames.some(l => l.toLowerCase() === suggestion.toLowerCase());
+              if (isKnown || suggestion === "Suspense") {
+                updatedVouchers[actualIndex] = { ...updatedVouchers[actualIndex], secondLedger: suggestion };
+              }
             }
           });
         } catch (err) {
@@ -928,8 +1358,11 @@ export default function App() {
       }));
     }
     
-    setIsProcessing(false);
     setProgress(100);
+    setTimeout(() => {
+      setIsProcessing(false);
+      setProgress(0);
+    }, 1000);
     toast.success('AI Ledger mapping complete');
   };
 
@@ -938,10 +1371,10 @@ export default function App() {
     
     // Check for missing masters before generating XML
     const missingLedgers = new Set<string>();
-    const missingStockItems = new Set<string>();
+    const missingStockItems = new Map<string, { name: string, hsn: string, gstRate: number, rate: number }>();
     
-    const existingLedgers = new Set(tallyData?.ledgers.map(l => l.name.toLowerCase()) || []);
-    const existingStockItems = new Set(tallyData?.stockItems.map(si => si.name.toLowerCase()) || []);
+    const existingLedgers = new Set(tallyData?.ledgers?.map(l => l.name.toLowerCase()) || []);
+    const existingStockItems = new Set(tallyData?.stockItems?.map(si => si.name.toLowerCase()) || []);
     
     vouchers.forEach(v => {
       if (v.ledgerName && !existingLedgers.has(v.ledgerName.toLowerCase())) missingLedgers.add(v.ledgerName);
@@ -955,7 +1388,14 @@ export default function App() {
 
       v.inventoryEntries?.forEach(ie => {
         if (ie.stockItemName && !existingStockItems.has(ie.stockItemName.toLowerCase())) {
-          missingStockItems.add(ie.stockItemName);
+          if (!missingStockItems.has(ie.stockItemName.toLowerCase())) {
+            missingStockItems.set(ie.stockItemName.toLowerCase(), {
+              name: ie.stockItemName,
+              hsn: ie.hsn || '',
+              gstRate: ie.gstRate || 0,
+              rate: ie.rate || 0
+            });
+          }
         }
       });
     });
@@ -970,10 +1410,17 @@ export default function App() {
         });
       });
       
-      missingStockItems.forEach(name => {
+      missingStockItems.forEach(details => {
         mastersToCreate.push({
           type: 'STOCKITEM',
-          data: { name, parent: 'Primary', uom: 'Nos' }
+          data: { 
+            name: details.name, 
+            parent: 'Primary', 
+            uom: 'Nos',
+            hsnCode: details.hsn,
+            gstRate: details.gstRate,
+            rate: details.rate
+          }
         });
       });
 
@@ -993,7 +1440,10 @@ export default function App() {
         { header: 'Type', key: 'type' },
         { header: 'Name', key: 'name' },
         { header: 'Parent', key: 'parent' },
-        { header: 'UOM', key: 'uom' }
+        { header: 'UOM', key: 'uom' },
+        { header: 'HSN', key: 'hsn' },
+        { header: 'GST Rate', key: 'gstRate' },
+        { header: 'Standard Rate', key: 'rate' }
       ];
       
       mastersToCreate.forEach(m => {
@@ -1001,7 +1451,10 @@ export default function App() {
           type: m.type,
           name: m.data.name,
           parent: m.data.parent,
-          uom: m.data.uom || ''
+          uom: m.data.uom || '',
+          hsn: m.data.hsnCode || '',
+          gstRate: m.data.gstRate || '',
+          rate: m.data.rate || ''
         });
       });
       
@@ -1132,6 +1585,62 @@ export default function App() {
     <React.Fragment>
       <Toaster position="top-center" />
       
+      {(isProcessing || isSaving) && progress > 0 && (
+        <div className="fixed inset-0 bg-background/80 backdrop-blur-sm z-[200] flex items-center justify-center p-4">
+          <div className="w-full max-w-md bg-card border shadow-2xl rounded-2xl p-8 space-y-6 text-center animate-in fade-in zoom-in duration-300">
+            <div className="relative mx-auto w-24 h-24">
+              <svg className="w-full h-full transform -rotate-90">
+                <circle
+                  cx="48"
+                  cy="48"
+                  r="40"
+                  stroke="currentColor"
+                  strokeWidth="8"
+                  fill="transparent"
+                  className="text-muted"
+                />
+                <circle
+                  cx="48"
+                  cy="48"
+                  r="40"
+                  stroke="currentColor"
+                  strokeWidth="8"
+                  fill="transparent"
+                  strokeDasharray={251.2}
+                  strokeDashoffset={251.2 - (251.2 * progress) / 100}
+                  strokeLinecap="round"
+                  className="text-primary transition-all duration-500 ease-out"
+                />
+              </svg>
+              <div className="absolute inset-0 flex flex-col items-center justify-center">
+                <span className="text-2xl font-bold">{progress}%</span>
+              </div>
+            </div>
+            
+            <div className="space-y-2">
+              <h3 className="text-xl font-bold flex items-center justify-center gap-2">
+                <Brain className="w-6 h-6 text-primary animate-pulse" />
+                Processing Data
+              </h3>
+              <p className="text-sm text-muted-foreground">
+                Please wait while Gemini AI analyzes your data and maps it to Tally ledgers.
+              </p>
+            </div>
+
+            <div className="w-full bg-muted rounded-full h-2 overflow-hidden">
+              <div 
+                className="bg-primary h-full transition-all duration-500" 
+                style={{ width: `${progress}%` }}
+              />
+            </div>
+            
+            <p className="text-[10px] text-muted-foreground uppercase tracking-widest font-bold">
+              Do not close this window
+            </p>
+          </div>
+        </div>
+      )}
+
       {isPasswordRequired && pendingPdfFile && (
         <div className="fixed inset-0 bg-background/80 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
           <div className="w-full max-w-md bg-card border shadow-2xl rounded-2xl p-6 space-y-6 animate-in zoom-in-95 duration-200">
@@ -1293,6 +1802,15 @@ export default function App() {
             }}
           />
         )}
+
+        {step === 'PURCHASE_MAPPING' && (
+          <PurchaseExcelMappingStep 
+            sheetNames={purchaseWorkbook?.SheetNames || []}
+            previewData={purchasePreview}
+            onMappingComplete={handlePurchaseMappingComplete}
+            onBack={() => setStep('EXCEL_UPLOAD')}
+          />
+        )}
         
         {step === 'EXCEL_UPLOAD' && (
           <ExcelUploadStep 
@@ -1313,6 +1831,7 @@ export default function App() {
             onDownloadDuplicates={handleDownloadDuplicates}
             isProcessing={isProcessing}
             progress={progress}
+            onDownloadExcel={handleDownloadExcel}
             onContinue={() => setStep('REVIEW')}
           />
         )}
@@ -1326,15 +1845,7 @@ export default function App() {
             isSaving={isSaving}
             progress={progress}
             onDownload={handleDownload}
-            onDownloadExcel={() => {
-              toast.info("Generating Excel...");
-              const excelBtn = document.querySelector('[data-excel-download-btn]') as HTMLButtonElement;
-              if (excelBtn) {
-                excelBtn.click();
-              } else {
-                toast.error("Excel generator not ready. Please go back to upload step.");
-              }
-            }}
+            onDownloadExcel={handleDownloadExcel}
             onDownloadDuplicates={handleDownloadDuplicates}
             onSaveToCloud={handleSaveToCloud}
             onBack={() => setStep('EXCEL_UPLOAD')}

@@ -19,7 +19,7 @@ const VoucherRow = ({ v, index, onLedgerChange }: VoucherRowProps) => {
         <div className="flex items-center gap-2 mb-1">
           <span className="text-xs font-medium text-muted-foreground">{v.date}</span>
           {v.voucherNumber && <span className="text-[10px] bg-muted px-1.5 py-0.5 rounded text-muted-foreground font-mono">#{v.voucherNumber}</span>}
-          <span className="text-sm font-bold text-primary">₹{v.amount.toLocaleString()}</span>
+          <span className="text-sm font-bold text-primary">₹{(v.partyAmount || v.amount).toLocaleString()}</span>
           <span className="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-primary/10 text-primary">{v.voucherType}</span>
         </div>
         <p className="text-sm text-muted-foreground truncate" title={v.narration}>{v.narration}</p>
@@ -27,46 +27,77 @@ const VoucherRow = ({ v, index, onLedgerChange }: VoucherRowProps) => {
         <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div className="space-y-1">
             <span className="text-[10px] font-bold text-green-600 uppercase tracking-wider">Debit (Dr)</span>
-            <div className="text-sm font-medium truncate bg-green-50/50 p-2 rounded border border-green-100">
-              {v.isDebit ? (
-                <span className="text-green-700">{v.ledgerName}</span>
-              ) : (
-                <input 
-                  list="ledger-list"
-                  className="w-full bg-transparent border-none focus:ring-0 p-0 text-sm placeholder:text-green-300"
-                  value={v.secondLedger || ''} 
-                  placeholder="Select Debit Ledger"
-                  onChange={(e) => onLedgerChange(e.target.value)}
-                />
-              )}
+            <div className="flex flex-col gap-1">
+              <div className="text-sm font-medium truncate bg-green-50/50 p-2 rounded border border-green-100 flex justify-between items-center">
+                {v.isDebit ? (
+                  <>
+                    <span className="text-green-700">{v.ledgerName}</span>
+                    <span className="text-green-600 font-bold">₹{v.amount.toLocaleString()}</span>
+                  </>
+                ) : (
+                  <>
+                    <input 
+                      list="ledger-list"
+                      className="w-full bg-transparent border-none focus:ring-0 p-0 text-sm placeholder:text-green-300"
+                      value={v.secondLedger || ''} 
+                      placeholder="Select Debit Ledger"
+                      onChange={(e) => onLedgerChange(e.target.value)}
+                    />
+                    {v.partyAmount !== undefined && <span className="text-green-600 font-bold ml-2">₹{v.partyAmount.toLocaleString()}</span>}
+                  </>
+                )}
+              </div>
+              {v.ledgerEntries?.filter(le => le.isDebit).map((le, idx) => (
+                <div key={`dr-le-${idx}`} className="text-xs text-green-700 bg-green-50/30 p-1.5 rounded border border-green-100/50 flex justify-between">
+                  <span>{le.ledgerName}</span>
+                  <span className="font-bold">₹{le.amount.toLocaleString()}</span>
+                </div>
+              ))}
             </div>
           </div>
           <div className="space-y-1">
             <span className="text-[10px] font-bold text-red-600 uppercase tracking-wider">Credit (Cr)</span>
-            <div className="text-sm font-medium truncate bg-red-50/50 p-2 rounded border border-red-100">
-              {!v.isDebit ? (
-                <span className="text-red-700">{v.ledgerName}</span>
-              ) : (
-                <input 
-                  list="ledger-list"
-                  className="w-full bg-transparent border-none focus:ring-0 p-0 text-sm placeholder:text-red-300"
-                  value={v.secondLedger || ''} 
-                  placeholder="Select Credit Ledger"
-                  onChange={(e) => onLedgerChange(e.target.value)}
-                />
-              )}
+            <div className="flex flex-col gap-1">
+              <div className="text-sm font-medium truncate bg-red-50/50 p-2 rounded border border-red-100 flex justify-between items-center">
+                {!v.isDebit ? (
+                  <>
+                    <span className="text-red-700">{v.ledgerName}</span>
+                    <span className="text-red-600 font-bold">₹{v.amount.toLocaleString()}</span>
+                  </>
+                ) : (
+                  <>
+                    <input 
+                      list="ledger-list"
+                      className="w-full bg-transparent border-none focus:ring-0 p-0 text-sm placeholder:text-red-300"
+                      value={v.secondLedger || ''} 
+                      placeholder="Select Credit Ledger"
+                      onChange={(e) => onLedgerChange(e.target.value)}
+                    />
+                    {v.partyAmount !== undefined && <span className="text-red-600 font-bold ml-2">₹{v.partyAmount.toLocaleString()}</span>}
+                  </>
+                )}
+              </div>
+              {v.ledgerEntries?.filter(le => !le.isDebit).map((le, idx) => (
+                <div key={`cr-le-${idx}`} className="text-xs text-red-700 bg-red-50/30 p-1.5 rounded border border-red-100/50 flex justify-between">
+                  <span>{le.ledgerName}</span>
+                  <span className="font-bold">₹{le.amount.toLocaleString()}</span>
+                </div>
+              ))}
             </div>
           </div>
         </div>
 
         {v.inventoryEntries && v.inventoryEntries.length > 0 && (
-          <div className="mt-2 space-y-1">
-            {v.inventoryEntries.map((ie, i) => (
-              <div key={i} className="text-[10px] bg-primary/5 text-primary px-2 py-0.5 rounded-full inline-flex items-center gap-1 mr-2">
-                <span className="font-bold">{ie.stockItemName}</span>
-                <span>{ie.quantity} x {ie.rate} = {ie.amount}</span>
-              </div>
-            ))}
+          <div className="mt-3 bg-muted/20 p-2 rounded border border-muted/30">
+            <span className="text-[9px] font-bold text-muted-foreground uppercase mb-1 block">Inventory Items</span>
+            <div className="flex flex-wrap gap-1.5">
+              {v.inventoryEntries.map((ie, i) => (
+                <div key={`${index}-ie-${i}`} className="text-[10px] bg-primary/5 text-primary px-2.5 py-1 rounded-md border border-primary/10 flex items-center gap-1">
+                  <span className="font-bold">{ie.stockItemName}</span>
+                  <span className="opacity-70">| {ie.quantity} x {ie.rate} = ₹{ie.amount.toLocaleString()}</span>
+                </div>
+              ))}
+            </div>
           </div>
         )}
       </div>

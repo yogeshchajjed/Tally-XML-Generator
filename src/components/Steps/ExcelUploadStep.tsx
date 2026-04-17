@@ -14,6 +14,7 @@ interface ExcelUploadStepProps {
   vouchers?: Voucher[];
   duplicates?: Voucher[];
   onDownloadDuplicates?: () => void;
+  onDownloadExcel?: () => void;
   onContinue?: () => void;
   isProcessing?: boolean;
   progress?: number;
@@ -28,6 +29,7 @@ export const ExcelUploadStep = ({
   vouchers = [],
   duplicates = [],
   onDownloadDuplicates,
+  onDownloadExcel,
   onContinue,
   isProcessing,
   progress = 0
@@ -40,109 +42,8 @@ export const ExcelUploadStep = ({
   }, [voucherType]);
 
   const downloadTemplate = async () => {
-    try {
-      const workbook = new ExcelJS.Workbook();
-      const worksheet = workbook.addWorksheet('Data');
-      
-      const headers = template.fields;
-      worksheet.addRow(headers);
-      
-      // Style headers
-      const headerRow = worksheet.getRow(1);
-      headerRow.font = { bold: true };
-      headerRow.fill = {
-        type: 'pattern',
-        pattern: 'solid',
-        fgColor: { argb: 'FFE0E0E0' }
-      };
-
-      const dataToExport = vouchers.length > 0 ? vouchers : [{
-        date: new Date().toISOString().split('T')[0],
-        amount: 0,
-        narration: 'Sample Entry',
-        voucherNumber: '',
-        secondLedger: ''
-      }];
-
-      dataToExport.forEach((v: any, index: number) => {
-        const row = headers.map(h => {
-          if (h === 'Date') return v.date;
-          if (h === 'Amount') return v.amount;
-          if (h === 'Debit') return v.isDebit ? v.amount : '';
-          if (h === 'Credit') return !v.isDebit ? v.amount : '';
-          if (h === 'Narration') return v.narration;
-          if (h === 'Narration 2') return v.narration2 || '';
-          if (h === 'Voucher Number') return v.voucherNumber || '';
-          if (['Paid To', 'Received From', 'Customer', 'Supplier', 'Debit Ledger', 'Credit Ledger', 'To Account', 'From Account', 'Ledger Name'].includes(h)) {
-            return v.secondLedger || '';
-          }
-          return '';
-        });
-        worksheet.addRow(row);
-      });
-
-      // Add validation for Journal
-      if (voucherType.toLowerCase().includes('journal')) {
-        const lastRow = dataToExport.length + 1;
-        worksheet.getCell(`G1`).value = 'Status (Dr=Cr?)';
-        worksheet.getColumn(7).width = 20;
-        
-        for (let i = 2; i <= lastRow; i++) {
-          // This is a simple per-row check, but user wants to check total.
-          // For a real check, we'd need a complex formula or just tell them to check totals.
-          // Let's add a total row at the end.
-          if (i === lastRow) {
-            const totalRow = worksheet.addRow([]);
-            totalRow.getCell(4).value = { formula: `SUM(D2:D${lastRow})` };
-            totalRow.getCell(5).value = { formula: `SUM(E2:E${lastRow})` };
-            totalRow.getCell(6).value = 'TOTAL';
-            totalRow.font = { bold: true };
-            
-            const statusCell = totalRow.getCell(7);
-            statusCell.value = { formula: `IF(D${lastRow+1}=E${lastRow+1}, "MATCHED", "MISMATCHED")` };
-          }
-        }
-      }
-
-      // Auto-width
-      headers.forEach((_, i) => {
-        worksheet.getColumn(i + 1).width = 25;
-      });
-
-      // Dropdowns
-      const ledgers = tallyData?.ledgers?.map(l => l.name) || [];
-      if (ledgers.length > 0) {
-        const listSheet = workbook.addWorksheet('Lists');
-        listSheet.state = 'veryHidden';
-        ledgers.slice(0, 1000).forEach((l, i) => listSheet.getCell(`A${i+1}`).value = l);
-        
-        headers.forEach((h, i) => {
-          if (['Paid To', 'Received From', 'Customer', 'Supplier', 'Debit Ledger', 'Credit Ledger', 'To Account', 'From Account', 'Ledger Name'].includes(h)) {
-            const colLetter = String.fromCharCode(65 + i);
-            const range = `Lists!$A$1:$A$${Math.min(1000, ledgers.length)}`;
-            for (let r = 2; r <= Math.max(dataToExport.length + 100, 500); r++) {
-              worksheet.getCell(`${colLetter}${r}`).dataValidation = {
-                type: 'list',
-                allowBlank: true,
-                formulae: [range]
-              };
-            }
-          }
-        });
-      }
-
-      const buffer = await workbook.xlsx.writeBuffer();
-      const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `Tally_${voucherType}_Export_${new Date().getTime()}.xlsx`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    } catch (err) {
-      console.error("Excel Export Error:", err);
+    if (onDownloadExcel) {
+      onDownloadExcel();
     }
   };
 
@@ -273,6 +174,7 @@ export const ExcelUploadStep = ({
           <div className="text-center">
             <p className="font-bold text-lg">Upload Excel Template</p>
             <p className="text-sm text-muted-foreground mt-1">If you have manually filled the template, upload it here.</p>
+            <p className="text-[11px] text-primary/70 mt-1 font-medium italic">Supports YYYY-MM-DD format (preferred)</p>
           </div>
           <input 
             type="file" 

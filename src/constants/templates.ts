@@ -11,13 +11,30 @@ export const VOUCHER_TEMPLATES = {
   },
   Sales: {
     nature: 'Inventory',
-    fields: ['Date', 'Voucher Number', 'Customer', 'Stock Item', 'Quantity', 'Rate', 'Amount', 'Narration'],
-    description: 'Used for recording sales with inventory.'
+    fields: [
+      'Date', 'Voucher Number', 'Customer', 'Sales Ledger', 
+      'Stock Item', 'HSN', 'GST Rate', 'Quantity', 'Rate', 'Amount', 
+      'CGST Ledger', 'CGST Amount', 'SGST Ledger', 'SGST Amount', 'IGST Ledger', 'IGST Amount',
+      'Additional Ledger 1', 'AL1 Amount', 'AL1 Type',
+      'Additional Ledger 2', 'AL2 Amount', 'AL2 Type',
+      'Additional Ledger 3', 'AL3 Amount', 'AL3 Type',
+      'Narration'
+    ],
+    description: 'Used for recording sales with inventory. Include GST and extra ledgers if needed.'
   },
   Purchase: {
     nature: 'Inventory',
-    fields: ['Date', 'Voucher Number', 'Supplier', 'Stock Item', 'Quantity', 'Rate', 'Amount', 'Narration'],
-    description: 'Used for recording purchases with inventory.'
+    fields: [
+      'Date', 'Voucher Number', 'Supplier', 'Purchase Ledger', 
+      'Supplier Invoice Number', 'Supplier Invoice Date', 
+      'Stock Item', 'HSN', 'GST Rate', 'Quantity', 'Rate', 'Amount', 
+      'CGST Ledger', 'CGST Amount', 'SGST Ledger', 'SGST Amount', 'IGST Ledger', 'IGST Amount',
+      'Additional Ledger 1', 'AL1 Amount', 'AL1 Type',
+      'Additional Ledger 2', 'AL2 Amount', 'AL2 Type',
+      'Additional Ledger 3', 'AL3 Amount', 'AL3 Type',
+      'Narration'
+    ],
+    description: 'Used for recording purchases with inventory. Include GST and extra ledgers if needed.'
   },
   Contra: {
     nature: 'Accounting',

@@ -81,15 +81,26 @@ export async function suggestLedgersBatch(
   previousVouchers: { narration: string, ledger: string }[] = []
 ): Promise<string[]> {
   if (!process.env.GEMINI_API_KEY) {
-    return narrations.map(() => "UNKNOWN");
+    return narrations.map(() => "Suspense");
   }
 
   const prompt = `
-    Map narrations to ledgers.
-    Ledgers: ${ledgers.join(', ')}
-    ${previousVouchers.length > 0 ? `Patterns: ${previousVouchers.slice(0, 10).map(v => `"${v.narration}"->"${v.ledger}"`).join('; ')}` : ''}
-    Tasks: ${narrations.map((n, i) => `${i + 1}. "${n}"`).join('\n')}
-    Return JSON array of strings (exact ledger name or "UNKNOWN").
+    Task: Map the following narrations to the most appropriate ledger from the provided list.
+    
+    STRICT RULES:
+    1. ONLY use ledger names from the "Allowed Ledgers" list below.
+    2. DO NOT create new ledger names.
+    3. If a narration does not clearly match any allowed ledger, map it to "Suspense".
+    4. If "Suspense" is not in the list, still return "Suspense" as the fallback.
+    
+    Allowed Ledgers: ${ledgers.join(', ')}
+    
+    ${previousVouchers.length > 0 ? `Historical Patterns (for reference): ${previousVouchers.slice(0, 15).map(v => `"${v.narration}" -> "${v.ledger}"`).join('; ')}` : ''}
+    
+    Narrations to Map:
+    ${narrations.map((n, i) => `${i + 1}. "${n}"`).join('\n')}
+    
+    Return ONLY a JSON array of strings containing the exact ledger names.
   `;
 
   try {
@@ -113,15 +124,15 @@ export async function suggestLedgersBatch(
     try {
       const results = JSON.parse(text);
       if (Array.isArray(results)) {
-        return results.map(r => String(r));
+        return results.map(r => (String(r) === "UNKNOWN" || !r) ? "Suspense" : String(r));
       }
     } catch (parseError) {
       console.error("AI JSON Parse Error. Raw text:", text);
     }
-    return narrations.map(() => "UNKNOWN");
+    return narrations.map(() => "Suspense");
   } catch (error) {
     console.error("AI Batch Error:", error);
-    return narrations.map(() => "UNKNOWN");
+    return narrations.map(() => "Suspense");
   }
 }
 

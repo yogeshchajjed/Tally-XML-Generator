@@ -11,6 +11,8 @@ export interface StockItem {
 
 export interface InventoryEntry {
   stockItemName: string;
+  hsn?: string;
+  gstRate?: number;
   quantity: number;
   rate: number;
   amount: number;
@@ -32,6 +34,9 @@ export interface Voucher {
   narration2?: string;
   isDebit: boolean;
   secondLedger?: string;
+  partyAmount?: number;
+  reference?: string;
+  referenceDate?: string;
   inventoryEntries?: InventoryEntry[];
   ledgerEntries?: LedgerEntry[];
 }
