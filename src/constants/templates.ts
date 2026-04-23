@@ -12,7 +12,7 @@ export const VOUCHER_TEMPLATES = {
   Sales: {
     nature: 'Inventory',
     fields: [
-      'Date', 'Voucher Number', 'Customer', 'Sales Ledger', 
+      'Date', 'Voucher Number', 'Customer', 'Customer GSTIN', 'Sales Ledger', 
       'Stock Item', 'HSN', 'GST Rate', 'Quantity', 'Rate', 'Amount', 
       'CGST Ledger', 'CGST Amount', 'SGST Ledger', 'SGST Amount', 'IGST Ledger', 'IGST Amount',
       'Additional Ledger 1', 'AL1 Amount', 'AL1 Type',
@@ -25,7 +25,7 @@ export const VOUCHER_TEMPLATES = {
   Purchase: {
     nature: 'Inventory',
     fields: [
-      'Date', 'Voucher Number', 'Supplier', 'Purchase Ledger', 
+      'Date', 'Voucher Number', 'Supplier', 'Supplier GSTIN', 'Purchase Ledger', 
       'Supplier Invoice Number', 'Supplier Invoice Date', 
       'Stock Item', 'HSN', 'GST Rate', 'Quantity', 'Rate', 'Amount', 
       'CGST Ledger', 'CGST Amount', 'SGST Ledger', 'SGST Amount', 'IGST Ledger', 'IGST Amount',

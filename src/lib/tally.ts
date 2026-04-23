@@ -1,5 +1,6 @@
 import { XMLParser, XMLBuilder } from 'fast-xml-parser';
 import { TallyData, Ledger, Voucher, StockItem, InventoryEntry } from '../types';
+import { GST_STATE_CODES } from '../constants/gst';
 
 export async function parseTallyXML(xmlContent: string): Promise<TallyData> {
   const parser = new XMLParser({
@@ -373,35 +374,70 @@ export async function fetchFromTally(port: string = '9000'): Promise<TallyData> 
 }
 
 export function generateLedgerXML(ledger: any, companyName: string = 'Imported Company'): string {
-  const builder = new XMLBuilder({ ignoreAttributes: false, attributeNamePrefix: "@_" });
+  const builder = new XMLBuilder({ ignoreAttributes: false, attributeNamePrefix: "@_", format: true });
   
-  const registrationType = ledger.gstin ? 'Regular' : 'Unregistered';
-  const state = ledger.state || '';
+  const gstin = String(ledger.gstin || '').trim();
+  const registrationType = gstin ? 'Regular' : 'Unregistered';
+  const stateFromGstin = gstin.length >= 2 ? (GST_STATE_CODES[gstin.substring(0, 2)] || '') : '';
+  const state = ledger.state || stateFromGstin || '';
+  const today = "20260401"; // Matching user's working XML date
+
+  const isCreditor = ledger.parent.toLowerCase().includes('creditor');
+  const isDebtor = ledger.parent.toLowerCase().includes('debtor');
 
   const xmlObj = {
     ENVELOPE: {
+      "@_xmlns:UDF": "TallyUDF",
       HEADER: { TALLYREQUEST: "Import Data" },
       BODY: {
         IMPORTDATA: {
           REQUESTDESC: { REPORTNAME: "All Masters", STATICVARIABLES: { SVCURRENTCOMPANY: companyName } },
           REQUESTDATA: {
             TALLYMESSAGE: {
+              "@_xmlns:UDF": "TallyUDF",
               LEDGER: {
                 "@_NAME": ledger.name,
                 "@_ACTION": "Create",
+                "LANGUAGENAME.LIST": {
+                  "NAME.LIST": { "@_TYPE": "String", NAME: ledger.name },
+                  LANGUAGEID: "1033"
+                },
                 NAME: ledger.name,
                 PARENT: ledger.parent,
-                "NAME.LIST": [
-                  { NAME: ledger.name },
-                  ...(ledger.alias1 ? [{ NAME: ledger.alias1 }] : []),
-                  ...(ledger.alias2 ? [{ NAME: ledger.alias2 }] : [])
-                ],
-                ADDRESS: [ledger.address1, ledger.address2].filter(Boolean).join('\n'),
-                LEDGERSTATE: state,
+                CURRENCYNAME: "₹",
+                TAXTYPE: "Others",
                 GSTREGISTRATIONTYPE: registrationType,
-                PARTYGSTIN: ledger.gstin || '',
-                ISOTHTERRITORYASSESSEE: "No",
-                GSTTYPE: "Goods"
+                PARTYGSTIN: gstin,
+                GSTTYPE: "Goods",
+                ISBILLWISEON: (isDebtor || isCreditor) ? "Yes" : "No",
+                ISGSTAPPLICABLE: "Yes",
+                ISDEEMEDPOSITIVE: isDebtor ? "Yes" : "No",
+                COUNTRYOFRESIDENCE: "India",
+                LEDGERCOUNTRYISDCODE: "+91",
+                PRIORSTATENAME: state,
+                OLDLEDSTATENAME: state,
+                "LEDGSTREGDETAILS.LIST": [
+                  {
+                    APPLICABLEFROM: today,
+                    GSTREGISTRATIONTYPE: registrationType,
+                    PLACEOFSUPPLY: state,
+                    GSTIN: gstin,
+                    ISOTHTERRITORYASSESSEE: "No",
+                    CONSIDERPURCHASEFOREXPORT: "No",
+                    ISTRANSPORTER: "No",
+                    ISCOMMONPARTY: "No"
+                  }
+                ],
+                "LEDMAILINGDETAILS.LIST": [
+                  {
+                    APPLICABLEFROM: today,
+                    MAILINGNAME: ledger.name,
+                    ADDRESS: [ledger.address1, ledger.address2].filter(Boolean),
+                    STATE: state,
+                    COUNTRY: "India",
+                    PINCODE: ledger.pincode || ''
+                  }
+                ]
               }
             }
           }
@@ -409,7 +445,7 @@ export function generateLedgerXML(ledger: any, companyName: string = 'Imported C
       }
     }
   };
-  return builder.build(xmlObj);
+  return '<?xml version="1.0" encoding="UTF-8"?>\n' + builder.build(xmlObj);
 }
 
 export function generateStockItemXML(item: any, companyName: string = 'Imported Company'): string {
@@ -470,33 +506,69 @@ export function generateStockItemXML(item: any, companyName: string = 'Imported 
 }
 
 export function generateMultiMasterXML(masters: { type: 'LEDGER' | 'STOCKITEM', data: any }[], companyName: string = 'Imported Company'): string {
-  const builder = new XMLBuilder({ ignoreAttributes: false, attributeNamePrefix: "@_" });
+  const builder = new XMLBuilder({ ignoreAttributes: false, attributeNamePrefix: "@_", format: true });
   
   const tallyMessages = masters.map(m => {
     if (m.type === 'LEDGER') {
-      const registrationType = m.data.gstin ? 'Regular' : 'Unregistered';
+      const gstin = String(m.data.gstin || '').trim();
+      const registrationType = gstin ? 'Regular' : 'Unregistered';
+      const stateFromGstin = gstin.length >= 2 ? (GST_STATE_CODES[gstin.substring(0, 2)] || '') : '';
+      const state = m.data.state || stateFromGstin || '';
+      const today = "20260401";
+      const isCreditor = String(m.data.parent).toLowerCase().includes('creditor');
+      const isDebtor = String(m.data.parent).toLowerCase().includes('debtor');
+
       return {
+        "@_xmlns:UDF": "TallyUDF",
         LEDGER: {
           "@_NAME": m.data.name,
           "@_ACTION": "Create",
+          "LANGUAGENAME.LIST": {
+            "NAME.LIST": { "@_TYPE": "String", NAME: m.data.name },
+            LANGUAGEID: "1033"
+          },
           NAME: m.data.name,
           PARENT: m.data.parent,
-          "NAME.LIST": [
-            { NAME: m.data.name },
-            ...(m.data.alias1 ? [{ NAME: m.data.alias1 }] : []),
-            ...(m.data.alias2 ? [{ NAME: m.data.alias2 }] : [])
-          ],
-          ADDRESS: [m.data.address1, m.data.address2].filter(Boolean).join('\n'),
-          LEDGERSTATE: m.data.state || '',
+          CURRENCYNAME: "₹",
+          TAXTYPE: "Others",
           GSTREGISTRATIONTYPE: registrationType,
-          PARTYGSTIN: m.data.gstin || '',
-          ISOTHTERRITORYASSESSEE: "No",
-          GSTTYPE: "Goods"
+          PARTYGSTIN: gstin,
+          GSTTYPE: "Goods",
+          ISBILLWISEON: (isDebtor || isCreditor) ? "Yes" : "No",
+          ISGSTAPPLICABLE: "Yes",
+          ISDEEMEDPOSITIVE: isDebtor ? "Yes" : "No",
+          COUNTRYOFRESIDENCE: "India",
+          LEDGERCOUNTRYISDCODE: "+91",
+          PRIORSTATENAME: state,
+          OLDLEDSTATENAME: state,
+          "LEDGSTREGDETAILS.LIST": [
+            {
+              APPLICABLEFROM: today,
+              GSTREGISTRATIONTYPE: registrationType,
+              PLACEOFSUPPLY: state,
+              GSTIN: gstin,
+              ISOTHTERRITORYASSESSEE: "No",
+              CONSIDERPURCHASEFOREXPORT: "No",
+              ISTRANSPORTER: "No",
+              ISCOMMONPARTY: "No"
+            }
+          ],
+          "LEDMAILINGDETAILS.LIST": [
+            {
+              APPLICABLEFROM: today,
+              MAILINGNAME: m.data.name,
+              ADDRESS: [m.data.address1, m.data.address2].filter(Boolean),
+              STATE: state,
+              COUNTRY: "India",
+              PINCODE: m.data.pincode || ''
+            }
+          ]
         }
       };
     } else {
       const gstApplicable = m.data.hsnCode ? 'Applicable' : 'Not Applicable';
       return {
+        "@_xmlns:UDF": "TallyUDF",
         STOCKITEM: {
           "@_NAME": m.data.name,
           "@_ACTION": "Create",
@@ -538,6 +610,7 @@ export function generateMultiMasterXML(masters: { type: 'LEDGER' | 'STOCKITEM', 
 
   const xmlObj = {
     ENVELOPE: {
+      "@_xmlns:UDF": "TallyUDF",
       HEADER: { TALLYREQUEST: "Import Data" },
       BODY: {
         IMPORTDATA: {

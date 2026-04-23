@@ -12,6 +12,7 @@ import { onAuthStateChanged, User } from 'firebase/auth';
 import { LogIn, LogOut, User as UserIcon, Sparkles, Brain } from 'lucide-react';
 
 import { parseTallyXML, generateTallyXML, fetchFromTally, generateMultiMasterXML } from './lib/tally';
+import { GST_STATE_CODES } from './constants/gst';
 import { suggestLedgersBatch, parseBankStatementPDF, parseBillPDF } from './lib/gemini';
 import { downloadVoucherExcel } from './lib/excel';
 import { TallyData, Voucher, LedgerEntry, InventoryEntry } from './types';
@@ -251,7 +252,8 @@ export default function App() {
       const matches = existingTransactions.filter(ex => {
         const dateMatch = ex.date.replace(/-/g, '') === v.date.replace(/-/g, '');
         const amountMatch = Math.abs(ex.amount - v.amount) < 0.01;
-        return dateMatch && amountMatch;
+        const typeMatch = (ex.voucherType || '').toLowerCase() === (v.voucherType || '').toLowerCase();
+        return dateMatch && amountMatch && typeMatch;
       });
 
       if (matches.length > 0) {
@@ -818,10 +820,12 @@ export default function App() {
         
         // Extract Header Info
         const supplierPos = parseCell(mapping.supplierCell);
+        const supplierGstinPos = mapping.supplierGstinCell ? parseCell(mapping.supplierGstinCell) : null;
         const datePos = parseCell(mapping.dateCell);
         const invNoPos = parseCell(mapping.invoiceNumberCell);
 
         const supplierName = supplierPos ? String(data[supplierPos.r]?.[supplierPos.c] || '') : '';
+        const supplierGstin = supplierGstinPos ? String(data[supplierGstinPos.r]?.[supplierGstinPos.c] || '').trim() : '';
         const invoiceDate = datePos ? formatDate(data[datePos.r]?.[datePos.c]) : formatDate(new Date());
         const invoiceNumber = invNoPos ? String(data[invNoPos.r]?.[invNoPos.c] || '') : '';
 
@@ -829,6 +833,7 @@ export default function App() {
 
         // Extract Items
         const inventoryEntries: InventoryEntry[] = [];
+        let directLedgerAmount = 0;
         const ledgerEntriesMap = new Map<string, { ledgerName: string, amount: number, isDebit: boolean }>();
         const isSalesVch = selectedVoucherType.toLowerCase().includes('sales');
         const isPurchaseVch = !isSalesVch;
@@ -842,11 +847,19 @@ export default function App() {
         const cgstIdx = mapping.cgstCol ? colToIndex(mapping.cgstCol) : -1;
         const sgstIdx = mapping.sgstCol ? colToIndex(mapping.sgstCol) : -1;
         const igstIdx = mapping.igstCol ? colToIndex(mapping.igstCol) : -1;
+        const gstinColIdx = mapping.supplierGstinCol ? colToIndex(mapping.supplierGstinCol) : -1;
+
+        let detectedGstin = supplierGstin;
 
         for (let r = mapping.itemsStartRow - 1; r < data.length; r++) {
           const row = data[r];
           const description = String(row[descIdx] || '').trim();
           const amount = parseFloat(row[amtIdx] || 0);
+
+          // If gstin column is mapped and we haven't found one yet, try to get it
+          if (gstinColIdx >= 0 && !detectedGstin && row[gstinColIdx]) {
+            detectedGstin = String(row[gstinColIdx]).trim();
+          }
 
           if (description && !isNaN(amount) && amount !== 0) {
             const descLower = description.toLowerCase();
@@ -863,13 +876,22 @@ export default function App() {
                 ledgerEntriesMap.set(key, { ledgerName: description, amount: Math.abs(amount), isDebit: isPurchaseVch });
               }
             } else {
-              inventoryEntries.push({
-                stockItemName: description,
-                hsn: String(row[hsnIdx] || '').trim(),
-                quantity: parseFloat(row[qtyIdx] || 0),
-                rate: parseFloat(row[rateIdx] || 0),
-                amount: Math.abs(amount)
-              });
+              const qty = parseFloat(row[qtyIdx] || 0);
+              const rate = parseFloat(row[rateIdx] || 0);
+              
+              // If we have quantity and rate, it's definitely an inventory item
+              if (qty > 0 && rate > 0) {
+                inventoryEntries.push({
+                  stockItemName: description,
+                  hsn: String(row[hsnIdx] || '').trim(),
+                  quantity: qty,
+                  rate: rate,
+                  amount: Math.abs(amount)
+                });
+              } else {
+                // Otherwise, treat as direct ledger amount for the main Purchase/Sales account
+                directLedgerAmount += Math.abs(amount);
+              }
             }
           }
 
@@ -896,8 +918,10 @@ export default function App() {
 
         const ledgerEntries = Array.from(ledgerEntriesMap.values());
 
-        if (inventoryEntries.length > 0 || ledgerEntries.length > 0) {
+        if (inventoryEntries.length > 0 || ledgerEntries.length > 0 || directLedgerAmount > 0) {
           const totalInventory = inventoryEntries.reduce((sum, ie) => sum + ie.amount, 0);
+          const totalVoucherBaseAmount = totalInventory + directLedgerAmount;
+          
           const extraAmount = ledgerEntries.reduce((sum, le) => {
             if (isPurchaseVch) {
               return sum + (le.isDebit ? le.amount : -le.amount);
@@ -911,8 +935,9 @@ export default function App() {
             voucherType: selectedVoucherType,
             voucherNumber: invoiceNumber,
             ledgerName: selectedAccount || (isSalesVch ? 'Sales' : 'Purchase'),
-            amount: totalInventory,
-            partyAmount: totalInventory + extraAmount,
+            amount: totalVoucherBaseAmount,
+            partyAmount: totalVoucherBaseAmount + extraAmount,
+            gstin: detectedGstin || undefined,
             narration: `Invoice ${invoiceNumber} from ${supplierName}`,
             isDebit: !isSalesVch, // Purchase = true (Dr), Sales = false (Cr)
             secondLedger: supplierName,
@@ -1215,6 +1240,7 @@ export default function App() {
           }, 0);
 
           const partyName = getVal(['customer', 'supplier', 'party name', 'customer name', 'supplier name', 'party_name', 'paid to', 'received from', 'debit ledger', 'credit ledger', 'to account', 'from account', 'party', 'account name', 'ledger name', 'ledger_name', 'party ledger']);
+          const gstin = getVal(['gstin', 'gst number', 'gst_number', 'gst no', 'gstin/uin', 'party gstin', 'supplier gstin', 'customer gstin', 'supplier gstn', 'party gstn']);
 
           const voucher: Voucher = {
             date: formatDate(firstRow.Date || firstRow.date),
@@ -1223,6 +1249,7 @@ export default function App() {
             ledgerName: String(rowLedger || selectedAccount || (isSalesVch ? 'Sales' : 'Purchase')),
             amount: totalAmount, // For Sales/Purchase, amount is the BASE account amount. Tally.ts balances it with taxes.
             partyAmount: totalAmount + extraAmount,
+            gstin: gstin ? String(gstin).trim() : undefined,
             narration: firstRow.Narration || firstRow.narration || (partyName ? `Invoice ${vNum} to ${partyName}` : ''),
             narration2: firstRow['Narration 2'] || firstRow.narration2 || '',
             isDebit: !isSalesVch, // Purchase (Dr) = true, Sales (Cr) = false
@@ -1245,7 +1272,8 @@ export default function App() {
             narration: row.Narration || row.narration || row.Description || row.description || row.Particulars || row.particulars || '',
             narration2: row['Narration 2'] || row.narration2 || '',
             isDebit: selectedVoucherType.toLowerCase().includes('receipt') || selectedVoucherType.toLowerCase().includes('sales'),
-            secondLedger: row['Credit Name'] || row['Debit Name'] || row['Paid To'] || row['Received From'] || row['Customer'] || row['Supplier'] || row['Debit Ledger'] || row['Credit Ledger'] || row['To Account'] || row['From Account'] || row['Description'] || row['description'] || ''
+            secondLedger: row['Credit Name'] || row['Debit Name'] || row['Paid To'] || row['Received From'] || row['Customer'] || row['Supplier'] || row['Debit Ledger'] || row['Credit Ledger'] || row['To Account'] || row['From Account'] || row['Description'] || row['description'] || '',
+            gstin: row['GSTIN'] || row['gstin'] || row['GST Number'] || row['gst_number'] || row['GST No'] || row['gst no'] || row['Party GSTIN'] || row['Supplier GSTIN'] || row['ledger_gstin'] || ''
           };
           return voucher;
         });
@@ -1370,20 +1398,28 @@ export default function App() {
     if (vouchers.length === 0) return;
     
     // Check for missing masters before generating XML
-    const missingLedgers = new Set<string>();
+    const missingLedgers = new Map<string, { name: string, gstin?: string }>();
     const missingStockItems = new Map<string, { name: string, hsn: string, gstRate: number, rate: number }>();
     
     const existingLedgers = new Set(tallyData?.ledgers?.map(l => l.name.toLowerCase()) || []);
     const existingStockItems = new Set(tallyData?.stockItems?.map(si => si.name.toLowerCase()) || []);
     
     vouchers.forEach(v => {
-      if (v.ledgerName && !existingLedgers.has(v.ledgerName.toLowerCase())) missingLedgers.add(v.ledgerName);
-      if (v.secondLedger && !existingLedgers.has(v.secondLedger.toLowerCase())) missingLedgers.add(v.secondLedger);
+      const checkLedger = (name: string, gstin?: string) => {
+        if (name && !existingLedgers.has(name.toLowerCase())) {
+          const key = name.toLowerCase();
+          const existingMissing = missingLedgers.get(key);
+          if (!existingMissing || (!existingMissing.gstin && gstin)) {
+            missingLedgers.set(key, { name, gstin });
+          }
+        }
+      };
+
+      checkLedger(v.ledgerName);
+      checkLedger(v.secondLedger || '', v.gstin);
       
       v.ledgerEntries?.forEach(le => {
-        if (le.ledgerName && !existingLedgers.has(le.ledgerName.toLowerCase())) {
-          missingLedgers.add(le.ledgerName);
-        }
+        checkLedger(le.ledgerName);
       });
 
       v.inventoryEntries?.forEach(ie => {
@@ -1403,10 +1439,23 @@ export default function App() {
     if (missingLedgers.size > 0 || missingStockItems.size > 0) {
       const mastersToCreate: { type: 'LEDGER' | 'STOCKITEM', data: any }[] = [];
       
-      missingLedgers.forEach(name => {
+      const isPurchase = selectedVoucherType.toLowerCase().includes('purchase');
+      const isSales = selectedVoucherType.toLowerCase().includes('sales');
+      const defaultGroup = isPurchase ? 'Sundry Creditors' : (isSales ? 'Sundry Debtors' : 'Suspense Account');
+
+      missingLedgers.forEach(details => {
+        const stateCode = details.gstin ? details.gstin.substring(0, 2) : '';
+        const stateName = GST_STATE_CODES[stateCode] || '';
+        
         mastersToCreate.push({
           type: 'LEDGER',
-          data: { name, parent: 'Suspense Account' }
+          data: { 
+            name: details.name, 
+            parent: defaultGroup,
+            gstin: details.gstin,
+            state: stateName,
+            country: 'India'
+          }
         });
       });
       
@@ -1439,7 +1488,10 @@ export default function App() {
       sheet.columns = [
         { header: 'Type', key: 'type' },
         { header: 'Name', key: 'name' },
-        { header: 'Parent', key: 'parent' },
+        { header: 'Parent', key: 'parent' }, // Column C
+        { header: 'GSTIN', key: 'gstin' },
+        { header: 'State', key: 'state' },  // Column E
+        { header: 'Country', key: 'country' },
         { header: 'UOM', key: 'uom' },
         { header: 'HSN', key: 'hsn' },
         { header: 'GST Rate', key: 'gstRate' },
@@ -1451,12 +1503,39 @@ export default function App() {
           type: m.type,
           name: m.data.name,
           parent: m.data.parent,
+          gstin: m.data.gstin || '',
+          state: m.data.state || '',
+          country: m.data.country || 'India',
           uom: m.data.uom || '',
           hsn: m.data.hsnCode || '',
           gstRate: m.data.gstRate || '',
           rate: m.data.rate || ''
         });
       });
+
+      // Add Lists for dropdowns
+      const listSheet = workbook.addWorksheet('Lists');
+      listSheet.state = 'veryHidden';
+
+      // GST States List
+      const states = Object.values(GST_STATE_CODES).sort();
+      states.forEach((s, i) => listSheet.getCell(`B${i + 1}`).value = s);
+      const stateRange = `='Lists'!$B$1:$B$${states.length}`;
+
+      // Groups List
+      const groups = (tallyData && tallyData.ledgers && Array.isArray(tallyData.ledgers)) 
+        ? [...new Set(tallyData.ledgers.map(l => l.parent).filter(Boolean))]
+        : [];
+      if (groups.length === 0) groups.push('Primary', 'Sundry Debtors', 'Sundry Creditors', 'Bank Accounts', 'Direct Expenses', 'Indirect Expenses');
+      
+      groups.forEach((g, i) => listSheet.getCell(`A${i + 1}`).value = g);
+      const groupRange = `='Lists'!$A$1:$A$${groups.length}`;
+
+      // Apply validations to first 500 rows
+      for (let i = 2; i <= 500; i++) {
+        sheet.getCell(`C${i}`).dataValidation = { type: 'list', formulae: [groupRange] };
+        sheet.getCell(`E${i}`).dataValidation = { type: 'list', formulae: [stateRange] };
+      }
       
       workbook.xlsx.writeBuffer().then(buffer => {
         const excelBlob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });

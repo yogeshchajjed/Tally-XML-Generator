@@ -10,6 +10,8 @@ interface PurchaseExcelMappingStepProps {
 
 export interface PurchaseMapping {
   supplierCell: string;
+  supplierGstinCell?: string;
+  supplierGstinCol?: string;
   dateCell: string;
   invoiceNumberCell: string;
   itemsStartRow: number;
@@ -26,6 +28,8 @@ export interface PurchaseMapping {
 export const PurchaseExcelMappingStep = ({ sheetNames, previewData, onMappingComplete, onBack }: PurchaseExcelMappingStepProps) => {
   const [mapping, setMapping] = useState<PurchaseMapping>({
     supplierCell: 'A1',
+    supplierGstinCell: '',
+    supplierGstinCol: '',
     dateCell: 'B1',
     invoiceNumberCell: 'C1',
     itemsStartRow: 5,
@@ -97,7 +101,7 @@ export const PurchaseExcelMappingStep = ({ sheetNames, previewData, onMappingCom
             <h4 className="text-sm font-bold uppercase tracking-wider text-primary flex items-center gap-2">
               <FileText className="w-4 h-4" /> Header Details
             </h4>
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid grid-cols-2 gap-4">
               <div className="space-y-1">
                 <label className="text-[10px] font-bold uppercase text-muted-foreground">Supplier Name Cell</label>
                 <input 
@@ -108,6 +112,18 @@ export const PurchaseExcelMappingStep = ({ sheetNames, previewData, onMappingCom
                   placeholder="e.g. A1"
                 />
               </div>
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold uppercase text-muted-foreground">Supplier GSTIN Cell (Optional)</label>
+                <input 
+                  type="text" 
+                  className="w-full h-9 px-3 text-sm rounded-md border border-input bg-background"
+                  value={mapping.supplierGstinCell}
+                  onChange={(e) => setMapping({ ...mapping, supplierGstinCell: e.target.value.toUpperCase() })}
+                  placeholder="e.g. A2"
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
               <div className="space-y-1">
                 <label className="text-[10px] font-bold uppercase text-muted-foreground">Invoice Date Cell</label>
                 <input 
@@ -154,6 +170,16 @@ export const PurchaseExcelMappingStep = ({ sheetNames, previewData, onMappingCom
                   value={mapping.descriptionCol}
                   onChange={(e) => setMapping({ ...mapping, descriptionCol: e.target.value.toUpperCase() })}
                   placeholder="e.g. A"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold uppercase text-muted-foreground">Supplier GSTIN Col (Optional)</label>
+                <input 
+                  type="text" 
+                  className="w-full h-9 px-3 text-sm rounded-md border border-input bg-background"
+                  value={mapping.supplierGstinCol}
+                  onChange={(e) => setMapping({ ...mapping, supplierGstinCol: e.target.value.toUpperCase() })}
+                  placeholder="e.g. F"
                 />
               </div>
               <div className="space-y-1">

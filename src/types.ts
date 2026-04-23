@@ -35,6 +35,7 @@ export interface Voucher {
   isDebit: boolean;
   secondLedger?: string;
   partyAmount?: number;
+  gstin?: string;
   reference?: string;
   referenceDate?: string;
   inventoryEntries?: InventoryEntry[];

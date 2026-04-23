@@ -5,22 +5,12 @@ import ExcelJS from 'exceljs';
 import { Ledger, StockItem, TallyData } from '../../types';
 import { generateLedgerXML, generateStockItemXML, generateMultiMasterXML } from '../../lib/tally';
 import { toast } from 'sonner';
+import { GST_STATE_CODES } from '../../constants/gst';
 
 interface MasterCreationStepProps {
   onBack: () => void;
   tallyData: TallyData | null;
 }
-
-const GST_STATE_CODES: Record<string, string> = {
-  '01': 'Jammu & Kashmir', '02': 'Himachal Pradesh', '03': 'Punjab', '04': 'Chandigarh',
-  '05': 'Uttarakhand', '06': 'Haryana', '07': 'Delhi', '08': 'Rajasthan', '09': 'Uttar Pradesh',
-  '10': 'Bihar', '11': 'Sikkim', '12': 'Arunachal Pradesh', '13': 'Nagaland', '14': 'Manipur',
-  '15': 'Mizoram', '16': 'Tripura', '17': 'Meghalaya', '18': 'Assam', '19': 'West Bengal',
-  '20': 'Jharkhand', '21': 'Odisha', '22': 'Chhattisgarh', '23': 'Madhya Pradesh', '24': 'Gujarat',
-  '27': 'Maharashtra', '28': 'Andhra Pradesh', '29': 'Karnataka', '30': 'Goa', '31': 'Lakshadweep',
-  '32': 'Kerala', '33': 'Tamil Nadu', '34': 'Puducherry', '35': 'Andaman & Nicobar Islands',
-  '36': 'Telangana', '37': 'Andhra Pradesh (New)'
-};
 
 const COSTING_METHODS = ['At Zero Cost', 'Avg. Cost', 'FIFO', 'FIFO Perpetual', 'Last Purchase Cost', 'LIFO Annual', 'LIFO Perpetual', 'Monthly Avg. Cost', 'Std. Cost'];
 
@@ -107,31 +97,38 @@ export const MasterCreationStep = ({ onBack, tallyData }: MasterCreationStepProp
     
     const headers = [
       'Name', 'Alias 1', 'Alias 2', 'Parent_Group', 
-      'Address 1', 'Address 2', 'GSTIN'
+      'Address 1', 'Address 2', 'GSTIN', 'State', 'Country'
     ];
     worksheet.addRow(headers);
     worksheet.getRow(1).font = { bold: true };
 
-    // Add dynamic lists if tallyData is available
-    if (tallyData && tallyData.ledgers && Array.isArray(tallyData.ledgers) && tallyData.ledgers.length > 0) {
-      const listSheet = workbook.addWorksheet('Lists');
-      listSheet.state = 'veryHidden';
+    // Add Lists for dropdowns
+    const listSheet = workbook.addWorksheet('Lists');
+    listSheet.state = 'veryHidden';
 
-      const groups = [...new Set(tallyData.ledgers.map(l => l.parent).filter(Boolean))];
-      if (groups.length === 0) groups.push('Primary', 'Sundry Debtors', 'Sundry Creditors');
-      
-      groups.forEach((g, i) => listSheet.getCell(`A${i + 1}`).value = g);
+    // GST States List
+    const states = Object.values(GST_STATE_CODES).sort();
+    states.forEach((s, i) => listSheet.getCell(`B${i + 1}`).value = s);
+    const stateRange = `='Lists'!$B$1:$B$${states.length}`;
 
-      const groupRange = `='Lists'!$A$1:$A$${groups.length}`;
+    // Groups List
+    const groups = (tallyData && tallyData.ledgers && Array.isArray(tallyData.ledgers)) 
+      ? [...new Set(tallyData.ledgers.map(l => l.parent).filter(Boolean))]
+      : [];
+    if (groups.length === 0) groups.push('Primary', 'Sundry Debtors', 'Sundry Creditors', 'Bank Accounts', 'Direct Expenses', 'Indirect Expenses');
+    
+    groups.forEach((g, i) => listSheet.getCell(`A${i + 1}`).value = g);
+    const groupRange = `='Lists'!$A$1:$A$${groups.length}`;
 
-      for (let i = 2; i <= 100; i++) {
-        worksheet.getCell(`D${i}`).dataValidation = { type: 'list', formulae: [groupRange] };
-      }
+    // Apply validations
+    for (let i = 2; i <= 500; i++) {
+      worksheet.getCell(`D${i}`).dataValidation = { type: 'list', formulae: [groupRange] };
+      worksheet.getCell(`H${i}`).dataValidation = { type: 'list', formulae: [stateRange] };
     }
 
     // Add sample data
-    worksheet.addRow(['ABC Traders', 'ABC', '', 'Sundry Debtors', 'Street 1', 'City', '07AAAAA0000A1Z5']);
-    worksheet.addRow(['XYZ Services', '', '', 'Sundry Creditors', 'Main Road', 'Mumbai', '27BBBBB1111B1Z1']);
+    worksheet.addRow(['ABC Traders', 'ABC', '', 'Sundry Debtors', 'Street 1', 'City', '07AAAAA0000A1Z5', 'Delhi', 'India']);
+    worksheet.addRow(['XYZ Services', '', '', 'Sundry Creditors', 'Main Road', 'Mumbai', '27BBBBB1111B1Z1', 'Maharashtra', 'India']);
 
     const buffer = await workbook.xlsx.writeBuffer();
     const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
@@ -209,49 +206,58 @@ export const MasterCreationStep = ({ onBack, tallyData }: MasterCreationStepProp
       const jsonData = XLSX.utils.sheet_to_json(worksheet) as any[];
 
       const masters = jsonData.map(row => {
-        const name = row.Name || row.name;
+        const rowKeys = Object.keys(row);
+        const getRowVal = (names: string[]) => {
+          const key = rowKeys.find(k => names.includes(k.toLowerCase().trim()));
+          return key ? row[key] : null;
+        };
+
+        const name = getRowVal(['name', 'ledger name', 'account name', 'stock item name', 'item name']);
         if (!name) return null;
 
-        // Detect type based on columns if 'Type' is missing
-        let rowType = String(row.Type || row.type || '').toUpperCase();
+        // Detect type
+        let rowType = String(getRowVal(['type']) || '').toUpperCase();
         if (!rowType) {
-          if ('GSTIN' in row || 'Address 1' in row || 'address1' in row) {
+          if (getRowVal(['gstin', 'gst number', 'address 1', 'address1'])) {
             rowType = 'LEDGER';
-          } else if ('UOM' in row || 'uom' in row || 'HSN_Code' in row || 'hsn_code' in row) {
+          } else if (getRowVal(['uom', 'hsn_code', 'hsn'])) {
             rowType = 'STOCKITEM';
           }
         }
 
         if (rowType.includes('LEDGER')) {
-          const gstin = row.GSTIN || row.gstin || '';
+          const gstin = String(getRowVal(['gstin', 'gst number', 'gst_number', 'gst no', 'gstín', 'tin', 'registration number']) || '').trim();
           const stateCode = gstin.substring(0, 2);
+          const state = getRowVal(['state', 'ledger_state', 'province']) || GST_STATE_CODES[stateCode] || '';
+          
           return {
             type: 'LEDGER' as const,
             data: {
               name,
-              alias1: row['Alias 1'] || row.alias1 || '',
-              alias2: row['Alias 2'] || row.alias2 || '',
-              parent: row.Parent_Group || row.parent_group || 'Sundry Debtors',
-              address1: row['Address 1'] || row.address1 || '',
-              address2: row['Address 2'] || row.address2 || '',
+              alias1: getRowVal(['alias 1', 'alias1']) || '',
+              alias2: getRowVal(['alias 2', 'alias2']) || '',
+              parent: getRowVal(['parent_group', 'parent group', 'parent', 'under']) || 'Sundry Debtors',
+              address1: getRowVal(['address 1', 'address1']) || '',
+              address2: getRowVal(['address 2', 'address2']) || '',
               gstin,
-              state: GST_STATE_CODES[stateCode] || '',
+              state: state,
+              country: getRowVal(['country', 'nation']) || 'India',
               registrationType: gstin ? 'Regular' : 'Unregistered'
             }
           };
         } else {
-          const hsnCode = row.HSN_Code || row.hsn_code || '';
+          const hsnCode = String(getRowVal(['hsn_code', 'hsn code', 'hsn']) || '').trim();
           return {
             type: 'STOCKITEM' as const,
             data: {
               name,
-              alias1: row['Alias 1'] || row.alias1 || '',
-              alias2: row['Alias 2'] || row.alias2 || '',
-              parent: row.Parent_Group || row.parent_group || 'Primary',
-              uom: row.UOM || row.uom || 'Nos',
+              alias1: getRowVal(['alias 1', 'alias1']) || '',
+              alias2: getRowVal(['alias 2', 'alias2']) || '',
+              parent: getRowVal(['parent_group', 'parent group', 'parent', 'under']) || 'Primary',
+              uom: getRowVal(['uom', 'unit', 'units']) || 'Nos',
               hsnCode,
-              gstRate: row.GST_Rate || row.gst_rate || '',
-              costingMethod: row.Costing_Method || row.costing_method || 'Avg. Cost',
+              gstRate: getRowVal(['gst_rate', 'gst rate', 'tax rate', 'rate']) || '',
+              costingMethod: getRowVal(['costing_method', 'costing method']) || 'Avg. Cost',
               gstApplicable: hsnCode ? 'Applicable' : 'Not Applicable'
             }
           };
