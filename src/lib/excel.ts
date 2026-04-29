@@ -61,8 +61,14 @@ export async function downloadVoucherExcel(
             if (h === 'Supplier Invoice Number') return v.reference || '';
             if (h === 'Supplier Invoice Date') return cleanDate(v.referenceDate);
             if (h === 'Customer' || h === 'Supplier') return v.secondLedger || '';
+            if (h === 'Buyer Name') return v.buyerName || '';
+            if (h === 'Customer GSTIN' || h === 'Supplier GSTIN') return v.gstin || '';
+            if (h === 'State of Customer') return v.stateOfCustomer || '';
+            if (h === 'Place of Supply') return v.placeOfSupply || '';
+            if (h === 'Seller GSTIN') return v.sellerGSTIN || '';
             if (h === 'Sales Ledger' || h === 'Purchase Ledger') return v.ledgerName || '';
             if (h === 'Stock Item') return ie.stockItemName;
+            if (h === 'Godown Name') return ie.godownName || '';
             if (h === 'HSN') return ie.hsn || '';
             if (h === 'GST Rate') return ie.gstRate || '';
             if (h === 'Quantity') return ie.quantity;
@@ -70,14 +76,14 @@ export async function downloadVoucherExcel(
             if (h === 'Amount') return ie.amount;
             
             // Additional and GST Ledgers (Voucher level)
-            if (h === 'CGST Ledger') return v.ledgerEntries?.find((le: any) => le.ledgerName.toLowerCase().includes('cgst'))?.ledgerName || '';
-            if (h === 'CGST Amount') return v.ledgerEntries?.find((le: any) => le.ledgerName.toLowerCase().includes('cgst'))?.amount || '';
-            if (h === 'SGST Ledger') return v.ledgerEntries?.find((le: any) => le.ledgerName.toLowerCase().includes('sgst'))?.ledgerName || '';
-            if (h === 'SGST Amount') return v.ledgerEntries?.find((le: any) => le.ledgerName.toLowerCase().includes('sgst'))?.amount || '';
-            if (h === 'IGST Ledger') return v.ledgerEntries?.find((le: any) => le.ledgerName.toLowerCase().includes('igst'))?.ledgerName || '';
-            if (h === 'IGST Amount') return v.ledgerEntries?.find((le: any) => le.ledgerName.toLowerCase().includes('igst'))?.amount || '';
+            if (h === 'CGST Ledger') return v.ledgerEntries?.find((le: any) => String(le.ledgerName || '').toLowerCase().includes('cgst'))?.ledgerName || '';
+            if (h === 'CGST Amount') return v.ledgerEntries?.find((le: any) => String(le.ledgerName || '').toLowerCase().includes('cgst'))?.amount || '';
+            if (h === 'SGST Ledger') return v.ledgerEntries?.find((le: any) => String(le.ledgerName || '').toLowerCase().includes('sgst'))?.ledgerName || '';
+            if (h === 'SGST Amount') return v.ledgerEntries?.find((le: any) => String(le.ledgerName || '').toLowerCase().includes('sgst'))?.amount || '';
+            if (h === 'IGST Ledger') return v.ledgerEntries?.find((le: any) => String(le.ledgerName || '').toLowerCase().includes('igst'))?.ledgerName || '';
+            if (h === 'IGST Amount') return v.ledgerEntries?.find((le: any) => String(le.ledgerName || '').toLowerCase().includes('igst'))?.amount || '';
             
-            const otherLedgers = v.ledgerEntries?.filter((le: any) => !le.ledgerName.toLowerCase().match(/cgst|sgst|igst/)) || [];
+            const otherLedgers = v.ledgerEntries?.filter((le: any) => !String(le.ledgerName || '').toLowerCase().match(/cgst|sgst|igst/)) || [];
             if (h === 'Additional Ledger 1') return otherLedgers[0]?.ledgerName || '';
             if (h === 'AL1 Amount') return otherLedgers[0]?.amount || '';
             if (h === 'AL1 Type') return otherLedgers[0] ? (otherLedgers[0].isDebit ? 'Dr' : 'Cr') : '';
@@ -104,9 +110,15 @@ export async function downloadVoucherExcel(
           if (h === 'Voucher Number') return v.voucherNumber || '';
           if (h === 'Supplier Invoice Number') return v.reference || '';
           if (h === 'Supplier Invoice Date') return cleanDate(v.referenceDate);
-          if (['Paid To', 'Received From', 'Customer', 'Supplier', 'Debit Ledger', 'Credit Ledger', 'To Account', 'From Account', 'Ledger Name', 'Sales Ledger', 'Purchase Ledger'].includes(h)) {
+          if (h === 'Bank/Cash Account') return v.ledgerName || '';
+          if (['Paid To', 'Received From', 'Customer', 'Supplier', 'Debit Ledger', 'Credit Ledger', 'To Account', 'From Account', 'Ledger Name', 'Sales Ledger', 'Purchase Ledger', 'Customer GSTIN', 'Supplier GSTIN', 'Buyer Name', 'State of Customer', 'Place of Supply', 'Seller GSTIN'].includes(h)) {
             // For Purchase, Supplier is secondLedger, Purchase Ledger is ledgerName
             if (h === 'Supplier' || h === 'Customer') return v.secondLedger || '';
+            if (h === 'Buyer Name') return v.buyerName || '';
+            if (h === 'Supplier GSTIN' || h === 'Customer GSTIN') return v.gstin || '';
+            if (h === 'State of Customer') return v.stateOfCustomer || '';
+            if (h === 'Place of Supply') return v.placeOfSupply || '';
+            if (h === 'Seller GSTIN') return v.sellerGSTIN || '';
             if (h === 'Purchase Ledger' || h === 'Sales Ledger') return v.ledgerName || '';
             return v.secondLedger || v.ledgerName || '';
           }
@@ -129,7 +141,7 @@ export async function downloadVoucherExcel(
       ledgers.slice(0, 1000).forEach((l, i) => listSheet.getCell(`A${i+1}`).value = l);
       
       headers.forEach((h, i) => {
-        if (['Paid To', 'Received From', 'Customer', 'Supplier', 'Debit Ledger', 'Credit Ledger', 'To Account', 'From Account', 'Ledger Name', 'Sales Ledger', 'Purchase Ledger'].includes(h)) {
+        if (['Bank/Cash Account', 'Paid To', 'Received From', 'Customer', 'Supplier', 'Debit Ledger', 'Credit Ledger', 'To Account', 'From Account', 'Ledger Name', 'Sales Ledger', 'Purchase Ledger'].includes(h)) {
           const colLetter = String.fromCharCode(65 + i);
           const range = `Lists!$A$1:$A$${Math.min(1000, ledgers.length)}`;
           for (let r = 2; r <= Math.max(dataToExport.length + 100, 500); r++) {
@@ -157,4 +169,60 @@ export async function downloadVoucherExcel(
     console.error("Excel Export Error:", err);
     throw err;
   }
+}
+
+export async function downloadMappingReport(vouchers: Voucher[]) {
+  const workbook = new ExcelJS.Workbook();
+  const worksheet = workbook.addWorksheet('Ledger Mapping');
+  
+  worksheet.columns = [
+    { header: 'Excel Party Name', key: 'excelName', width: 35 },
+    { header: 'Tally Ledger Name', key: 'tallyName', width: 35 },
+    { header: 'GSTIN', key: 'gstin', width: 25 },
+    { header: 'Match Status', key: 'status', width: 20 }
+  ];
+  
+  const headerRow = worksheet.getRow(1);
+  headerRow.font = { bold: true };
+  headerRow.fill = {
+    type: 'pattern',
+    pattern: 'solid',
+    fgColor: { argb: 'FFE0E0E0' }
+  };
+  
+  // Get unique mappings
+  const mappingMap = new Map<string, { excelName: string, tallyName: string, gstin: string }>();
+  vouchers.forEach(v => {
+    if (v.excelPartyName || v.secondLedger) {
+      const key = `${v.excelPartyName || ''}_${v.secondLedger || ''}`;
+      if (!mappingMap.has(key)) {
+        mappingMap.set(key, {
+          excelName: v.excelPartyName || '',
+          tallyName: v.secondLedger || '',
+          gstin: v.gstin || ''
+        });
+      }
+    }
+  });
+  
+  mappingMap.forEach(m => {
+    const isGstinMatched = m.excelName && m.tallyName && m.excelName.toLowerCase().trim() !== m.tallyName.toLowerCase().trim();
+    worksheet.addRow({
+      excelName: m.excelName,
+      tallyName: m.tallyName,
+      gstin: m.gstin,
+      status: isGstinMatched ? 'Matched via GSTIN' : (m.excelName === m.tallyName ? 'Exact Match' : 'New Ledger')
+    });
+  });
+  
+  const buffer = await workbook.xlsx.writeBuffer();
+  const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `Ledger_Mapping_Report_${new Date().getTime()}.xlsx`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }

@@ -1,6 +1,8 @@
 export interface Ledger {
   name: string;
   parent: string;
+  gstin?: string;
+  state?: string;
 }
 
 export interface StockItem {
@@ -16,12 +18,14 @@ export interface InventoryEntry {
   quantity: number;
   rate: number;
   amount: number;
+  godownName?: string;
 }
 
 export interface LedgerEntry {
   ledgerName: string;
   amount: number;
   isDebit: boolean;
+  hsn?: string;
 }
 
 export interface Voucher {
@@ -33,9 +37,18 @@ export interface Voucher {
   narration: string;
   narration2?: string;
   isDebit: boolean;
+  hsn?: string;
+  gstRate?: number;
   secondLedger?: string;
+  excelPartyName?: string;
   partyAmount?: number;
   gstin?: string;
+  state?: string;
+  stateOfCustomer?: string;
+  placeOfSupply?: string;
+  sellerGSTIN?: string;
+  buyerName?: string;
+  consigneeName?: string;
   reference?: string;
   referenceDate?: string;
   inventoryEntries?: InventoryEntry[];

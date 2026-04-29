@@ -1,17 +1,18 @@
 import React from 'react';
 import { Loader2, Download, Brain, AlertCircle } from 'lucide-react';
-import { Voucher } from '../../types';
+import { Voucher, LedgerEntry } from '../../types';
 
 interface VoucherRowProps {
   key?: React.Key;
   v: Voucher;
   index: number;
-  onLedgerChange: (val: string) => void;
+  onLedgerChange: (field: 'ledgerName' | 'secondLedger', val: string) => void;
+  onAdditionalLedgerChange: (leIndex: number, field: keyof LedgerEntry, val: any) => void;
 }
 
-const VoucherRow = ({ v, index, onLedgerChange }: VoucherRowProps) => {
-  const drLedger = v.isDebit ? v.ledgerName : v.secondLedger;
-  const crLedger = v.isDebit ? v.secondLedger : v.ledgerName;
+const VoucherRow = ({ v, index, onLedgerChange, onAdditionalLedgerChange }: VoucherRowProps) => {
+  const isReceipt = v.voucherType.toLowerCase().includes('receipt');
+  const isPayment = v.voucherType.toLowerCase().includes('payment');
 
   return (
     <div className="p-4 flex flex-col md:flex-row md:items-center justify-between gap-6 hover:bg-muted/30 transition-colors border-b last:border-0">
@@ -21,68 +22,113 @@ const VoucherRow = ({ v, index, onLedgerChange }: VoucherRowProps) => {
           {v.voucherNumber && <span className="text-[10px] bg-muted px-1.5 py-0.5 rounded text-muted-foreground font-mono">#{v.voucherNumber}</span>}
           <span className="text-sm font-bold text-primary">₹{(v.partyAmount || v.amount).toLocaleString()}</span>
           <span className="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-primary/10 text-primary">{v.voucherType}</span>
+          {v.excelPartyName && v.secondLedger && String(v.excelPartyName).toLowerCase().trim() !== String(v.secondLedger).toLowerCase().trim() && (
+            <span className="text-[9px] bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded border border-amber-200" title={`Excel Name: ${v.excelPartyName}`}>
+              Matched: {v.excelPartyName} → {v.secondLedger}
+            </span>
+          )}
         </div>
         <p className="text-sm text-muted-foreground truncate" title={v.narration}>{v.narration}</p>
         
         <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div className="space-y-1">
-            <span className="text-[10px] font-bold text-green-600 uppercase tracking-wider">Debit (Dr)</span>
+            <span className="text-[10px] font-bold text-green-600 uppercase tracking-wider flex justify-between">
+              Debit (Dr)
+              {isReceipt && <span className="text-[9px] lowercase font-normal italic opacity-60">(Bank/Cash)</span>}
+            </span>
             <div className="flex flex-col gap-1">
               <div className="text-sm font-medium truncate bg-green-50/50 p-2 rounded border border-green-100 flex justify-between items-center">
-                {v.isDebit ? (
-                  <>
-                    <span className="text-green-700">{v.ledgerName}</span>
-                    <span className="text-green-600 font-bold">₹{v.amount.toLocaleString()}</span>
-                  </>
-                ) : (
-                  <>
-                    <input 
-                      list="ledger-list"
-                      className="w-full bg-transparent border-none focus:ring-0 p-0 text-sm placeholder:text-green-300"
-                      value={v.secondLedger || ''} 
-                      placeholder="Select Debit Ledger"
-                      onChange={(e) => onLedgerChange(e.target.value)}
-                    />
-                    {v.partyAmount !== undefined && <span className="text-green-600 font-bold ml-2">₹{v.partyAmount.toLocaleString()}</span>}
-                  </>
-                )}
-              </div>
-              {v.ledgerEntries?.filter(le => le.isDebit).map((le, idx) => (
-                <div key={`dr-le-${idx}`} className="text-xs text-green-700 bg-green-50/30 p-1.5 rounded border border-green-100/50 flex justify-between">
-                  <span>{le.ledgerName}</span>
-                  <span className="font-bold">₹{le.amount.toLocaleString()}</span>
+                <div className="flex-1 min-w-0 mr-2">
+                  <input 
+                    list="ledger-list"
+                    className="w-full bg-transparent border-none focus:ring-0 p-0 text-sm placeholder:text-green-300 font-medium"
+                    value={v.isDebit ? v.ledgerName : (v.secondLedger || '')} 
+                    placeholder="Select Debit Ledger"
+                    onChange={(e) => onLedgerChange(v.isDebit ? 'ledgerName' : 'secondLedger', e.target.value)}
+                  />
                 </div>
-              ))}
+                <span className="text-green-600 font-bold">₹{v.amount.toLocaleString()}</span>
+              </div>
+              {v.ledgerEntries?.map((le, leIdx) => {
+                if (!le.isDebit) return null;
+                return (
+                  <div key={`dr-le-${leIdx}`} className="text-xs text-green-700 bg-green-50/30 p-1.5 rounded border border-green-100/50 flex justify-between items-center group">
+                    <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                      <button 
+                        onClick={() => onAdditionalLedgerChange(leIdx, 'isDebit', false)}
+                        className="text-[10px] font-bold bg-green-100 text-green-700 px-1 rounded cursor-pointer hover:bg-green-200 transition-colors shrink-0"
+                        title="Change to Credit"
+                      >
+                        Dr
+                      </button>
+                      <input 
+                        list="ledger-list"
+                        className="bg-transparent border-none focus:ring-0 p-0 text-xs w-full font-medium"
+                        value={le.ledgerName}
+                        onChange={(e) => onAdditionalLedgerChange(leIdx, 'ledgerName', e.target.value)}
+                      />
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <input 
+                        type="number"
+                        className="bg-transparent border-none focus:ring-0 p-0 text-xs w-16 text-right font-bold"
+                        value={le.amount}
+                        onChange={(e) => onAdditionalLedgerChange(leIdx, 'amount', parseFloat(e.target.value) || 0)}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
           <div className="space-y-1">
-            <span className="text-[10px] font-bold text-red-600 uppercase tracking-wider">Credit (Cr)</span>
+            <span className="text-[10px] font-bold text-red-600 uppercase tracking-wider flex justify-between">
+              Credit (Cr)
+              {isPayment && <span className="text-[9px] lowercase font-normal italic opacity-60">(Bank/Cash)</span>}
+            </span>
             <div className="flex flex-col gap-1">
               <div className="text-sm font-medium truncate bg-red-50/50 p-2 rounded border border-red-100 flex justify-between items-center">
-                {!v.isDebit ? (
-                  <>
-                    <span className="text-red-700">{v.ledgerName}</span>
-                    <span className="text-red-600 font-bold">₹{v.amount.toLocaleString()}</span>
-                  </>
-                ) : (
-                  <>
-                    <input 
-                      list="ledger-list"
-                      className="w-full bg-transparent border-none focus:ring-0 p-0 text-sm placeholder:text-red-300"
-                      value={v.secondLedger || ''} 
-                      placeholder="Select Credit Ledger"
-                      onChange={(e) => onLedgerChange(e.target.value)}
-                    />
-                    {v.partyAmount !== undefined && <span className="text-red-600 font-bold ml-2">₹{v.partyAmount.toLocaleString()}</span>}
-                  </>
-                )}
-              </div>
-              {v.ledgerEntries?.filter(le => !le.isDebit).map((le, idx) => (
-                <div key={`cr-le-${idx}`} className="text-xs text-red-700 bg-red-50/30 p-1.5 rounded border border-red-100/50 flex justify-between">
-                  <span>{le.ledgerName}</span>
-                  <span className="font-bold">₹{le.amount.toLocaleString()}</span>
+                <div className="flex-1 min-w-0 mr-2">
+                  <input 
+                    list="ledger-list"
+                    className="w-full bg-transparent border-none focus:ring-0 p-0 text-sm placeholder:text-red-300 font-medium"
+                    value={!v.isDebit ? v.ledgerName : (v.secondLedger || '')} 
+                    placeholder="Select Credit Ledger"
+                    onChange={(e) => onLedgerChange(!v.isDebit ? 'ledgerName' : 'secondLedger', e.target.value)}
+                  />
                 </div>
-              ))}
+                <span className="text-red-600 font-bold">₹{v.amount.toLocaleString()}</span>
+              </div>
+              {v.ledgerEntries?.map((le, leIdx) => {
+                if (le.isDebit) return null;
+                return (
+                  <div key={`cr-le-${leIdx}`} className="text-xs text-red-700 bg-red-50/30 p-1.5 rounded border border-red-100/50 flex justify-between items-center group">
+                    <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                      <button 
+                        onClick={() => onAdditionalLedgerChange(leIdx, 'isDebit', true)}
+                        className="text-[10px] font-bold bg-red-100 text-red-700 px-1 rounded cursor-pointer hover:bg-red-200 transition-colors shrink-0"
+                        title="Change to Debit"
+                      >
+                        Cr
+                      </button>
+                      <input 
+                        list="ledger-list"
+                        className="bg-transparent border-none focus:ring-0 p-0 text-xs w-full font-medium"
+                        value={le.ledgerName}
+                        onChange={(e) => onAdditionalLedgerChange(leIdx, 'ledgerName', e.target.value)}
+                      />
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <input 
+                        type="number"
+                        className="bg-transparent border-none focus:ring-0 p-0 text-xs w-16 text-right font-bold"
+                        value={le.amount}
+                        onChange={(e) => onAdditionalLedgerChange(leIdx, 'amount', parseFloat(e.target.value) || 0)}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
         </div>
@@ -114,13 +160,15 @@ interface ReviewStepProps {
   progress: number;
   onDownload: () => void;
   onDownloadExcel?: () => void;
+  onDownloadMapping?: () => void;
   onDownloadDuplicates: () => void;
   onSaveToCloud: () => void;
   onBack: () => void;
   currentPage: number;
   totalPages: number;
   onPageChange: (p: number) => void;
-  onLedgerChange: (index: number, val: string) => void;
+  onLedgerChange: (index: number, field: 'ledgerName' | 'secondLedger', val: string) => void;
+  onAdditionalLedgerChange: (vIndex: number, leIndex: number, field: keyof LedgerEntry, val: any) => void;
   itemsPerPage: number;
 }
 
@@ -133,6 +181,7 @@ export const ReviewStep = ({
   progress, 
   onDownload, 
   onDownloadExcel,
+  onDownloadMapping,
   onDownloadDuplicates,
   onSaveToCloud,
   onBack,
@@ -140,6 +189,7 @@ export const ReviewStep = ({
   totalPages, 
   onPageChange, 
   onLedgerChange,
+  onAdditionalLedgerChange,
   itemsPerPage
 }: ReviewStepProps) => (
   <div className="w-full max-w-[95%] mx-auto bg-card text-card-foreground rounded-lg border shadow-sm p-6">
@@ -170,6 +220,14 @@ export const ReviewStep = ({
         >
           {isSaving ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Brain className="w-4 h-4 mr-2" />}
           Save to Cloud
+        </button>
+        <button 
+          className="inline-flex items-center justify-center rounded-md text-sm font-medium border border-input bg-background hover:bg-accent h-10 px-4 py-2"
+          onClick={onDownloadMapping}
+          disabled={isProcessing || vouchers.length === 0}
+        >
+          <Brain className="w-4 h-4 mr-2" />
+          Mapping Report
         </button>
         <button 
           className="inline-flex items-center justify-center rounded-md text-sm font-medium border border-input bg-background hover:bg-accent h-10 px-4 py-2"
@@ -216,7 +274,8 @@ export const ReviewStep = ({
           key={(currentPage - 1) * itemsPerPage + i} 
           v={v} 
           index={(currentPage - 1) * itemsPerPage + i} 
-          onLedgerChange={(val) => onLedgerChange((currentPage - 1) * itemsPerPage + i, val)} 
+          onLedgerChange={(field, val) => onLedgerChange((currentPage - 1) * itemsPerPage + i, field, val)} 
+          onAdditionalLedgerChange={(leIdx, field, val) => onAdditionalLedgerChange((currentPage - 1) * itemsPerPage + i, leIdx, field, val)}
         />
       ))}
     </div>

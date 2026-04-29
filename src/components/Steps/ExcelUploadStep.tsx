@@ -1,7 +1,7 @@
 import React from 'react';
 import * as XLSX from 'xlsx';
 import ExcelJS from 'exceljs';
-import { FileSpreadsheet, Upload, Loader2, Brain, AlertCircle, Download, ArrowRight } from 'lucide-react';
+import { FileSpreadsheet, Upload, Loader2, Brain, AlertCircle, Download, ArrowRight, Settings2 } from 'lucide-react';
 import { TallyData, Voucher } from '../../types';
 import { VOUCHER_TEMPLATES } from '../../constants/templates';
 
@@ -15,6 +15,7 @@ interface ExcelUploadStepProps {
   duplicates?: Voucher[];
   onDownloadDuplicates?: () => void;
   onDownloadExcel?: () => void;
+  onConfigureMapping?: () => void;
   onContinue?: () => void;
   isProcessing?: boolean;
   progress?: number;
@@ -30,10 +31,13 @@ export const ExcelUploadStep = ({
   duplicates = [],
   onDownloadDuplicates,
   onDownloadExcel,
+  onConfigureMapping,
   onContinue,
   isProcessing,
   progress = 0
 }: ExcelUploadStepProps) => {
+  const isSalesOrPurchase = voucherType.toLowerCase().includes('sales') || voucherType.toLowerCase().includes('purchase');
+  
   const template = React.useMemo(() => {
     const baseType = Object.keys(VOUCHER_TEMPLATES).find(t => 
       voucherType.toLowerCase().includes(t.toLowerCase())
@@ -144,7 +148,15 @@ export const ExcelUploadStep = ({
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {onConfigureMapping && isSalesOrPurchase && (
+              <button 
+                onClick={onConfigureMapping}
+                className="flex items-center justify-center gap-2 rounded-xl text-sm font-semibold border border-primary text-primary hover:bg-primary/5 h-11 transition-all shadow-sm"
+              >
+                <Settings2 className="w-4 h-4" /> Configure Mapping
+              </button>
+            )}
             <button 
               onClick={downloadTemplate}
               data-excel-download-btn
@@ -155,7 +167,7 @@ export const ExcelUploadStep = ({
             <button 
               onClick={onContinue}
               disabled={isProcessing}
-              className="flex items-center justify-center gap-2 rounded-xl text-sm font-bold bg-primary text-primary-foreground hover:bg-primary/90 h-11 transition-all shadow-lg shadow-primary/20 disabled:opacity-50"
+              className="flex items-center justify-center gap-2 rounded-xl text-sm font-bold bg-primary text-primary-foreground hover:bg-primary/90 h-11 transition-all shadow-lg shadow-primary/20 disabled:opacity-50 lg:col-span-1"
             >
               Proceed to Review <ArrowRight className="w-4 h-4" />
             </button>

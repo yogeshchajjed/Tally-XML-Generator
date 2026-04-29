@@ -1,19 +1,20 @@
 export const VOUCHER_TEMPLATES = {
   Payment: {
     nature: 'Accounting',
-    fields: ['Date', 'Voucher Number', 'Amount', 'Narration', 'Narration 2', 'Paid To'],
+    fields: ['Date', 'Voucher Number', 'Bank/Cash Account', 'Amount', 'Narration', 'Narration 2', 'Paid To'],
     description: 'Used for cash or bank payments.'
   },
   Receipt: {
     nature: 'Accounting',
-    fields: ['Date', 'Voucher Number', 'Amount', 'Narration', 'Narration 2', 'Received From'],
+    fields: ['Date', 'Voucher Number', 'Bank/Cash Account', 'Amount', 'Narration', 'Narration 2', 'Received From'],
     description: 'Used for cash or bank receipts.'
   },
   Sales: {
     nature: 'Inventory',
     fields: [
-      'Date', 'Voucher Number', 'Customer', 'Customer GSTIN', 'Sales Ledger', 
-      'Stock Item', 'HSN', 'GST Rate', 'Quantity', 'Rate', 'Amount', 
+      'Date', 'Voucher Number', 'Customer', 'Buyer Name', 'Customer GSTIN', 
+      'State of Customer', 'Place of Supply', 'Seller GSTIN', 'Sales Ledger', 
+      'Stock Item', 'Godown Name', 'HSN', 'GST Rate', 'Quantity', 'Rate', 'Amount', 
       'CGST Ledger', 'CGST Amount', 'SGST Ledger', 'SGST Amount', 'IGST Ledger', 'IGST Amount',
       'Additional Ledger 1', 'AL1 Amount', 'AL1 Type',
       'Additional Ledger 2', 'AL2 Amount', 'AL2 Type',

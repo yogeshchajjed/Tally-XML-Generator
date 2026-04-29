@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Settings2, ArrowRight, AlertCircle, Table, FileText, Layout } from 'lucide-react';
+import { Settings2, ArrowRight, AlertCircle, Table, FileText, Layout, Info } from 'lucide-react';
 
 interface PurchaseExcelMappingStepProps {
   sheetNames: string[];
@@ -20,6 +20,7 @@ export interface PurchaseMapping {
   quantityCol: string;
   rateCol: string;
   amountCol: string;
+  purchaseLedgerCol?: string;
   cgstCol?: string;
   sgstCol?: string;
   igstCol?: string;
@@ -38,6 +39,7 @@ export const PurchaseExcelMappingStep = ({ sheetNames, previewData, onMappingCom
     quantityCol: 'C',
     rateCol: 'D',
     amountCol: 'E',
+    purchaseLedgerCol: '',
     cgstCol: '',
     sgstCol: '',
     igstCol: ''
@@ -211,6 +213,17 @@ export const PurchaseExcelMappingStep = ({ sheetNames, previewData, onMappingCom
                   onChange={(e) => setMapping({ ...mapping, rateCol: e.target.value.toUpperCase() })}
                   placeholder="e.g. D"
                 />
+              </div>
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold uppercase text-primary">Purchase/Sales Ledger Col</label>
+                <input 
+                  type="text" 
+                  className="w-full h-9 px-3 text-sm rounded-md border-2 border-primary/20 bg-background focus:border-primary transition-colors"
+                  value={mapping.purchaseLedgerCol}
+                  onChange={(e) => setMapping({ ...mapping, purchaseLedgerCol: e.target.value.toUpperCase() })}
+                  placeholder="e.g. G"
+                />
+                <p className="text-[9px] text-muted-foreground italic">Use this if you don't have stock items.</p>
               </div>
               <div className="space-y-1">
                 <label className="text-[10px] font-bold uppercase text-muted-foreground">Amount Col</label>

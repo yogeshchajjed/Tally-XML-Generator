@@ -69,8 +69,28 @@ export async function parseTallyXML(xmlContent: string): Promise<TallyData> {
   const processLedger = (l: any) => {
     const name = extractName(l);
     const parent = extractName(l.PARENT || l.PARENTNAME || l["@_PARENT"] || l["@_PARENTNAME"] || l.GROUP || l["@_GROUP"]);
+    
+    // Extract GSTIN
+    let gstin = l.PARTYGSTIN || l.GSTIN;
+    if (!gstin && l["LEDGSTREGDETAILS.LIST"]) {
+      const gList = Array.isArray(l["LEDGSTREGDETAILS.LIST"]) ? l["LEDGSTREGDETAILS.LIST"] : [l["LEDGSTREGDETAILS.LIST"]];
+      gstin = gList[0]?.GSTIN || gList[0]?.PARTYGSTIN;
+    }
+    
+    // Extract State
+    let state = l.STATE || l.STATENAME;
+    if (!state && l["LEDMAILINGDETAILS.LIST"]) {
+      const mList = Array.isArray(l["LEDMAILINGDETAILS.LIST"]) ? l["LEDMAILINGDETAILS.LIST"] : [l["LEDMAILINGDETAILS.LIST"]];
+      state = mList[0]?.STATE || mList[0]?.STATENAME;
+    }
+
     if (name) {
-      ledgers.push({ name, parent: parent || '' });
+      ledgers.push({ 
+        name, 
+        parent: parent || '',
+        gstin: gstin ? String(gstin).trim() : undefined,
+        state: state ? String(state).trim() : undefined
+      });
     }
   };
 
@@ -382,8 +402,8 @@ export function generateLedgerXML(ledger: any, companyName: string = 'Imported C
   const state = ledger.state || stateFromGstin || '';
   const today = "20260401"; // Matching user's working XML date
 
-  const isCreditor = ledger.parent.toLowerCase().includes('creditor');
-  const isDebtor = ledger.parent.toLowerCase().includes('debtor');
+  const isCreditor = String(ledger.parent || '').toLowerCase().includes('creditor');
+  const isDebtor = String(ledger.parent || '').toLowerCase().includes('debtor');
 
   const xmlObj = {
     ENVELOPE: {
@@ -663,7 +683,7 @@ export function generateTallyXML(vouchers: Voucher[], companyName: string = 'Imp
           // Actually Tally is weird. For Invoice, Item Amount is often positive but its accounting allocation handles the sign.
           "BATCHALLOCATIONS.LIST": [
             {
-              GODOWNNAME: "Main Location",
+              GODOWNNAME: ie.godownName || "Main Location",
               BATCHNAME: "Primary Batch",
               AMOUNT: (-amt).toFixed(2)
             }
@@ -700,7 +720,32 @@ export function generateTallyXML(vouchers: Voucher[], companyName: string = 'Imp
       ledgerEntries.push({
         LEDGERNAME: v.ledgerName,
         ISDEEMEDPOSITIVE: v.isDebit ? "Yes" : "No",
-        AMOUNT: (-mainAmt).toFixed(2)
+        AMOUNT: (-mainAmt).toFixed(2),
+        ...(v.hsn ? {
+          METHODTYPE: "GST",
+          GSTOVRDNTAXABILITY: "Taxable",
+          GSTSOURCETYPE: "Ledger",
+          GSTLEDGERSOURCE: v.ledgerName,
+          HSNSOURCETYPE: "Ledger",
+          HSNLEDGERSOURCE: v.ledgerName,
+          GSTOVRDNTYPEOFSUPPLY: "Services",
+          GSTRATEINFERAPPLICABILITY: "As per Masters/Company",
+          GSTHSNNAME: v.hsn,
+          ...(v.gstRate ? {
+            "RATEDETAILS.LIST": [
+              {
+                GSTRATEDUTYHEAD: "CGST",
+                GSTRATEVALUATIONTYPE: "Based on Value",
+                GSTRATE: ` ${(v.gstRate / 2)}`
+              },
+              {
+                GSTRATEDUTYHEAD: "SGST/UTGST",
+                GSTRATEVALUATIONTYPE: "Based on Value",
+                GSTRATE: ` ${(v.gstRate / 2)}`
+              }
+            ]
+          } : {})
+        } : {})
       });
       otherSum += mainAmt;
     }
@@ -711,7 +756,7 @@ export function generateTallyXML(vouchers: Voucher[], companyName: string = 'Imp
       v.ledgerEntries.forEach(le => {
         const amt = le.isDebit ? le.amount : -le.amount;
         otherSum += amt;
-        const lowerName = le.ledgerName.toLowerCase();
+        const lowerName = String(le.ledgerName || '').toLowerCase();
         const isGST = lowerName.includes('gst') || lowerName.includes('tax');
         
         additionalLedgers.push({
@@ -734,31 +779,81 @@ export function generateTallyXML(vouchers: Voucher[], companyName: string = 'Imp
         AMOUNT: (-partyAmount).toFixed(2),
         ISPARTYLEDGER: "Yes"
       },
-      ...additionalLedgers,
-      ...ledgerEntries
+      ...ledgerEntries,
+      ...additionalLedgers
     ];
 
     const isInvoice = isSales || isPurchase;
     const vDate = String(v.date || '').replace(/-/g, '');
     const guid = `ais-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const partyName = v.buyerName || partyLedgerName;
+    const sellerRegName = v.voucherType.includes('Registration') ? v.voucherType : `${GST_STATE_CODES[(v.sellerGSTIN || '').substring(0, 2)] || 'Company'} Registration`;
 
     return {
       VOUCHER: {
+        "@_REMOTEID": guid,
         "@_VCHTYPE": v.voucherType,
         "@_ACTION": "Create",
         "@_OBJVIEW": isInvoice ? "Invoice Voucher View" : "Accounting Voucher View",
+        "OLDAUDITENTRYIDS.LIST": {
+          "@_TYPE": "Number",
+          OLDAUDITENTRYIDS: "-1"
+        },
         DATE: vDate,
-        VOUCHERTYPENAME: v.voucherType,
-        VOUCHERNUMBER: v.voucherNumber || '',
-        PARTYLEDGERNAME: partyLedgerName,
-        ISINVOICE: isInvoice ? "Yes" : "No",
-        REFERENCE: v.reference || '',
-        REFERENCEDATE: v.referenceDate ? String(v.referenceDate).replace(/-/g, '') : vDate,
+        REFERENCEDATE: vDate,
         VCHSTATUSDATE: vDate,
         GUID: guid,
+        GSTREGISTRATIONTYPE: v.gstin ? "Regular" : "Unregistered/Consumer",
+        STATENAME: (v.stateOfCustomer || v.state || '').toUpperCase(),
+        NARRATION: v.narration2 ? `${v.narration}\n${v.narration2}` : v.narration,
+        COUNTRYOFRESIDENCE: "India",
+        PARTYGSTIN: v.gstin || '',
+        PLACEOFSUPPLY: (v.placeOfSupply || v.state || '').toUpperCase(),
+        VOUCHERTYPENAME: v.voucherType,
+        PARTYNAME: partyName,
+        GSTREGISTRATION: {
+          "@_TAXTYPE": "GST",
+          "@_TAXREGISTRATION": v.sellerGSTIN || '',
+          "#text": sellerRegName
+        },
+        CMPGSTIN: v.sellerGSTIN || '',
+        PARTYLEDGERNAME: partyLedgerName,
+        VOUCHERNUMBER: v.voucherNumber || '',
+        BASICBUYERNAME: partyName,
+        CMPGSTREGISTRATIONTYPE: "Regular",
+        PARTYMAILINGNAME: partyName,
+        CONSIGNEEGSTIN: v.gstin || '',
+        CONSIGNEEMAILINGNAME: v.consigneeName || partyName,
+        CONSIGNEESTATENAME: (v.stateOfCustomer || v.state || '').toUpperCase(),
+        CMPGSTSTATE: (GST_STATE_CODES[(v.sellerGSTIN || '').substring(0, 2)] || '').toUpperCase(),
+        CONSIGNEECOUNTRYNAME: "India",
+        BASICBASEPARTYNAME: partyLedgerName,
+        NUMBERINGSTYLE: "Manual",
+        CSTFORMISSUETYPE: "&#4; Not Applicable",
+        CSTFORMRECVTYPE: "&#4; Not Applicable",
+        FBTPAYMENTTYPE: "Default",
+        PERSISTEDVIEW: isInvoice ? "Invoice Voucher View" : "Accounting Voucher View",
+        VCHSTATUSTAXADJUSTMENT: "Default",
+        VCHSTATUSVOUCHERTYPE: v.voucherType,
+        VCHSTATUSTAXUNIT: sellerRegName,
+        VCHGSTCLASS: "&#4; Not Applicable",
+        VCHENTRYMODE: isInvoice ? "Item Invoice" : "Accounting Invoice",
+        VOUCHERTYPEORIGNAME: v.voucherType,
+        BASICCONSIGNEECOUNTRYNAME: "India",
+        BASICBUYERCOUNTRYNAME: "India",
+        BASICBUYERSTATENAME: (v.stateOfCustomer || v.state || '').toUpperCase(),
+        BASICCONSIGNEESTATENAME: (v.stateOfCustomer || v.state || '').toUpperCase(),
         "ALLINVENTORYENTRIES.LIST": inventoryEntries,
         "LEDGERENTRIES.LIST": finalLedgerEntries,
-        NARRATION: v.narration2 ? `${v.narration}\n${v.narration2}` : v.narration
+        "GST.LIST": {
+          PURPOSETYPE: "GST",
+          "STAT.LIST": {
+            PURPOSETYPE: "GST",
+            STATKEY: "&#4; Auto Stat Number",
+            ISFETCHEDONLY: "No",
+            ISDELETED: "No"
+          }
+        }
       }
     };
   });
@@ -787,7 +882,8 @@ export function generateTallyXML(vouchers: Voucher[], companyName: string = 'Imp
                 COMPANY: {
                   "REMOTECMPINFO.LIST": {
                     "@_MERGE": "Yes",
-                    REMOTECMPNAME: companyName
+                    REMOTECMPNAME: companyName,
+                    REMOTECMPSTATE: (vouchers[0]?.sellerGSTIN ? GST_STATE_CODES[vouchers[0].sellerGSTIN.substring(0, 2)] : 'Maharashtra')
                   }
                 }
               }

@@ -1,8 +1,12 @@
 import { GoogleGenAI } from "@google/genai";
+import Fuse from 'fuse.js';
 
 const genAI = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
 
-async function withRetry<T>(fn: () => Promise<T>, maxRetries: number = 5): Promise<T> {
+// Use gemini-3-flash-preview as per the current Gemini API guidelines
+const MODEL_NAME = "gemini-3-flash-preview";
+
+async function withRetry<T>(fn: () => Promise<T>, maxRetries: number = 2): Promise<T> {
   let lastError: any;
   for (let i = 0; i < maxRetries; i++) {
     try {
@@ -10,36 +14,11 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries: number = 5): Promi
     } catch (error: any) {
       lastError = error;
       const errorStr = JSON.stringify(error).toLowerCase();
+      const isQuota = errorStr.includes('429') || errorStr.includes('quota');
       
-      const isQuotaExceeded = errorStr.includes('429') || errorStr.includes('quota') || errorStr.includes('rate limit') || errorStr.includes('resource_exhausted');
-      const isRetryable = 
-        isQuotaExceeded ||
-        errorStr.includes('503') || 
-        errorStr.includes('500') || 
-        errorStr.includes('high demand') ||
-        errorStr.includes('unavailable') ||
-        errorStr.includes('internal') ||
-        error?.status === 'UNAVAILABLE' ||
-        error?.status === 'INTERNAL' ||
-        error?.code === 503 ||
-        error?.code === 500 ||
-        error?.code === 429;
-
-      if (isRetryable && i < maxRetries - 1) {
-        // Default exponential backoff
-        let delay = Math.pow(2, i) * 2000 + Math.random() * 1000;
-        
-        // If it's a quota error, wait longer
-        if (isQuotaExceeded) {
-          delay = Math.pow(2, i) * 5000 + Math.random() * 2000;
-          // Try to extract retry delay from error if available (e.g. "Please retry in 42s")
-          const retryMatch = errorStr.match(/retry in (\d+\.?\d*)s/);
-          if (retryMatch && retryMatch[1]) {
-            delay = (parseFloat(retryMatch[1]) + 1) * 1000;
-          }
-        }
-
-        console.warn(`Gemini API error (Attempt ${i + 1}/${maxRetries}). Retrying in ${Math.round(delay)}ms...`, isQuotaExceeded ? "(Quota Exceeded)" : "");
+      if (isQuota && i < maxRetries - 1) {
+        const delay = 3000 + Math.random() * 1000;
+        console.warn(`Gemini Quota. Retrying in ${Math.round(delay)}ms...`);
         await new Promise(resolve => setTimeout(resolve, delay));
         continue;
       }
@@ -47,6 +26,129 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries: number = 5): Promi
     }
   }
   throw lastError;
+}
+
+/**
+ * Optimized ledger mapping:
+ * 1. Exact match.
+ * 2. High-confidence Fuzzy Search (Very Fast).
+ * 3. Deep search in historical records.
+ * 4. Batch AI Categorization with gemini-1.5-flash (Fast).
+ */
+export async function suggestLedgersBatch(
+  narrations: string[],
+  ledgers: string[],
+  previousVouchers: { narration: string, ledger: string }[] = []
+): Promise<string[]> {
+  const startTime = Date.now();
+  const finalResults: (string | null)[] = new Array(narrations.length).fill(null);
+  
+  // 1. Setup Fuzzy search (threshold 0.4 handles typos and slight variations better)
+  const ledgerFuse = new Fuse(ledgers, {
+    threshold: 0.4,
+    distance: 1000,
+    ignoreLocation: true,
+    minMatchCharLength: 2
+  });
+
+  const historyFuse = previousVouchers.length > 0 ? new Fuse(previousVouchers, {
+    keys: ['narration'],
+    threshold: 0.4,
+    distance: 1000,
+    ignoreLocation: true,
+    minMatchCharLength: 3
+  }) : null;
+
+  // --- Step 1: Rapid Local Matching ---
+  for (let i = 0; i < narrations.length; i++) {
+    const narration = narrations[i];
+    if (!narration) {
+      finalResults[i] = "Suspense";
+      continue;
+    }
+
+    const normNarration = narration.toUpperCase().trim();
+    
+    // A. Exact match first
+    const exact = ledgers.find(l => l.toUpperCase() === normNarration);
+    if (exact) {
+      finalResults[i] = exact;
+      continue;
+    }
+
+    // B. Fuzzy match in current ledgers
+    const ledgerSearch = ledgerFuse.search(narration);
+    if (ledgerSearch.length > 0 && ledgerSearch[0].score! < 0.3) {
+      finalResults[i] = ledgerSearch[0].item;
+      continue;
+    }
+
+    // C. Historical match (Checks if this narration was previously mapped to an existing ledger)
+    if (historyFuse) {
+      const historySearch = historyFuse.search(narration);
+      if (historySearch.length > 0 && historySearch[0].score! < 0.35) {
+        const historicalLedger = historySearch[0].item.ledger;
+        const exists = ledgers.find(l => l.toLowerCase() === historicalLedger.toLowerCase());
+        if (exists) {
+          finalResults[i] = exists;
+          continue;
+        }
+      }
+    }
+  }
+
+  // --- Step 2: Batch AI Fallback for Remaining ---
+  const unmatchedIndices = finalResults.map((res, idx) => res === null ? idx : null).filter(idx => idx !== null) as number[];
+  
+  if (unmatchedIndices.length > 0) {
+    const batchNarrations = unmatchedIndices.map(idx => narrations[idx]);
+    
+    // Smart ledger filtering: Only send ledgers that share keywords with narrations
+    const keywords = new Set(batchNarrations.flatMap(n => n.toLowerCase().split(/\W+/).filter(w => w.length > 3)));
+    const aiLedgers = ledgers.filter(l => {
+      const lowL = l.toLowerCase();
+      if (['cash', 'bank', 'gst', 'tax', 'rent', 'salary', 'fees', 'purchase', 'sales'].some(k => lowL.includes(k))) return true;
+      return lowL.split(/\W+/).some(w => keywords.has(w));
+    }).slice(0, 500);
+
+    const prompt = `Map these narrations to the Allowed Ledgers.
+    Allowed Ledgers: [${aiLedgers.join(', ')}]
+    
+    Narrations:
+    ${batchNarrations.map((n, i) => `${i + 1}. ${n}`).join('\n')}
+    
+    Return ONLY a JSON array of strings: ["Ledger1", "Ledger2", ...]. Use "Suspense" if no match.`;
+
+    try {
+      const response = await withRetry(() => genAI.models.generateContent({
+        model: MODEL_NAME,
+        contents: prompt,
+        config: {
+          temperature: 0.1,
+          responseMimeType: "application/json"
+        }
+      }));
+
+      const aiText = response.text || "[]";
+      const aiSuggestions = JSON.parse(aiText.match(/\[.*\]/s)?.[0] || "[]");
+      
+      if (Array.isArray(aiSuggestions)) {
+        aiSuggestions.forEach((sug, i) => {
+          const targetIdx = unmatchedIndices[i];
+          if (targetIdx !== undefined) {
+            const found = ledgers.find(l => l.toLowerCase() === String(sug).toLowerCase());
+            finalResults[targetIdx] = found || "Suspense";
+          }
+        });
+      }
+    } catch (e) {
+      console.error("Mapping AI Error:", e);
+    }
+  }
+
+  const final = finalResults.map(r => r || "Suspense");
+  console.log(`Mapped ${narrations.length} in ${Date.now() - startTime}ms`);
+  return final;
 }
 
 export async function askGemini(
@@ -58,81 +160,15 @@ export async function askGemini(
   }
 
   try {
-    const response = await withRetry(() => (genAI as any).models.generateContent({
-      model: "gemini-2.0-flash",
-      contents: [{ role: 'user', parts: [{ text: `
-        Context: ${context}
-        Query: ${query}
-        
-        You are an expert Tally and accounting assistant. Provide a detailed, helpful response.
-      ` }] }]
-    })) as any;
+    const response = await withRetry(() => genAI.models.generateContent({
+      model: MODEL_NAME,
+      contents: `Context: ${context}\nQuery: ${query}\nYou are an expert Tally and accounting assistant. Provide a detailed, helpful response.`
+    }));
 
     return response.text || "I'm sorry, I couldn't generate a response.";
   } catch (error) {
     console.error("Error in Gemini Thinking:", error);
-    return "An error occurred while processing your request. The AI service might be under heavy load, please try again in a moment.";
-  }
-}
-
-export async function suggestLedgersBatch(
-  narrations: string[],
-  ledgers: string[],
-  previousVouchers: { narration: string, ledger: string }[] = []
-): Promise<string[]> {
-  if (!process.env.GEMINI_API_KEY) {
-    return narrations.map(() => "Suspense");
-  }
-
-  const prompt = `
-    Task: Map the following narrations to the most appropriate ledger from the provided list.
-    
-    STRICT RULES:
-    1. ONLY use ledger names from the "Allowed Ledgers" list below.
-    2. DO NOT create new ledger names.
-    3. If a narration does not clearly match any allowed ledger, map it to "Suspense".
-    4. If "Suspense" is not in the list, still return "Suspense" as the fallback.
-    
-    Allowed Ledgers: ${ledgers.join(', ')}
-    
-    ${previousVouchers.length > 0 ? `Historical Patterns (for reference): ${previousVouchers.slice(0, 15).map(v => `"${v.narration}" -> "${v.ledger}"`).join('; ')}` : ''}
-    
-    Narrations to Map:
-    ${narrations.map((n, i) => `${i + 1}. "${n}"`).join('\n')}
-    
-    Return ONLY a JSON array of strings containing the exact ledger names.
-  `;
-
-  try {
-    const response = await withRetry(() => (genAI as any).models.generateContent({
-      model: "gemini-2.0-flash",
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      generationConfig: {
-        temperature: 0.1,
-        responseMimeType: "application/json",
-        maxOutputTokens: 1000
-      }
-    }), 5) as any; // Increased retries for quota issues
-
-    let text = response.text?.trim() || "[]";
-    
-    // Remove markdown code blocks if present
-    if (text.startsWith('```')) {
-      text = text.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim();
-    }
-
-    try {
-      const results = JSON.parse(text);
-      if (Array.isArray(results)) {
-        return results.map(r => (String(r) === "UNKNOWN" || !r) ? "Suspense" : String(r));
-      }
-    } catch (parseError) {
-      console.error("AI JSON Parse Error. Raw text:", text);
-    }
-    return narrations.map(() => "Suspense");
-  } catch (error) {
-    console.error("AI Batch Error:", error);
-    return narrations.map(() => "Suspense");
+    return "An error occurred while processing your request.";
   }
 }
 
@@ -210,19 +246,16 @@ export async function parseBillPDF(
 
 async function parsePDFWithGemini(prompt: string, textData: string): Promise<any> {
   try {
-    const response = await withRetry(() => (genAI as any).models.generateContent({
-      model: "gemini-2.0-flash",
-      contents: [{
-        role: 'user',
-        parts: [{ text: prompt }]
-      }],
-      generationConfig: {
+    const response = await withRetry(() => genAI.models.generateContent({
+      model: MODEL_NAME,
+      contents: prompt,
+      config: {
         temperature: 0.1,
         responseMimeType: "application/json",
       }
-    })) as any;
+    }));
 
-    let text = response.text?.trim() || "[]";
+    let text = response.text || "[]";
     
     // Robustly extract JSON if AI adds extra text or markdown
     const jsonMatch = text.match(/[\{\[]\s*[\s\S]*[\}\]]/);
